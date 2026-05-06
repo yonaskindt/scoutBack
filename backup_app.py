@@ -6,238 +6,268 @@ import base64
 import re
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="FRC Scouting Hub", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="FRC Scouting Hub", layout="wide", initial_sidebar_state="expanded")
 
 # --- CUSTOM CSS ---
 st.markdown("""
     <style>
-    [data-testid="stHorizontalBlock"] {
-        background-color: rgba(255, 255, 255, 0.05);
-        padding: 10px 15px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        margin-bottom: 10px;
-        align-items: center;
+    .main .block-container { max-width: 100%; padding: 1rem 1rem; }
+    
+    /* Team Info Cards - High Density */
+    .team-info-box-detailed {
+        padding: 8px; border-radius: 8px; border-top: 4px solid;
+        background-color: rgba(255, 255, 255, 0.08); font-size: 12px;
+        box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 2px;
     }
-    div.stButton > button { width: 100%; border-radius: 5px; height: 3em; font-weight: bold; }
-    .stButton > button[kind="primary"] { background-color: #4F8BF9 !important; color: white !important; border: 1px solid #FFFFFF; }
-    [data-testid="stMetricValue"] { font-size: 24px; font-weight: 800; color: #FFFFFF !important; }
-    .team-info-box {
-        padding: 10px;
-        border-radius: 8px;
-        border-left: 6px solid;
-        background-color: rgba(255, 255, 255, 0.05);
-        margin-bottom: 8px;
-        font-size: 13px;
+    .stat-row { display: flex; justify-content: space-between; margin-bottom: 1px; }
+    .note-text { font-style: italic; font-size: 10px; color: #BDC3C7; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3px; padding-top: 2px; height: 32px; overflow: hidden; }
+    
+    /* Predict styling in Sidebar */
+    .sidebar-predict {
+        padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.1); margin-top: 10px;
     }
-    .reliability-badge {
-        font-size: 11px;
-        background: rgba(255,255,255,0.1);
-        padding: 2px 6px;
-        border-radius: 10px;
-        color: #BDC3C7;
-    }
+    
+    /* Remove padding from the HTML component to fix the gap */
+    [data-testid="stHtml"] { padding: 0 !important; margin: 0 !important; }
+    iframe { display: block; margin: 0 auto; border: none; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 1. DATA LOADING & CLEANING ---
+# --- 1. DATA LOADING ---
 @st.cache_data
 def load_frc_data():
     file_name = "scouting_data.xlsx"
-    
-    # Match Data (Data_Input)
-    data = pd.read_excel(file_name, sheet_name="Data_Input")
-    for col in ['+1', '+3', '+5']:
-        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-    data['Total Fuel'] = data['+1'] + data['+3'] + data['+5']
-    # Handles booleans or "true"/"false" strings
-    data['Moved?'] = data['Moved?'].astype(str).str.lower().map({'true': 1, '1': 1, '1.0': 1, 'false': 0, '0': 0, '0.0': 0}).fillna(0)
-    
-    # Pit Data
-    pit = pd.read_excel(file_name, sheet_name="Pit_Input")
-    
-    # Matches Schema - Adjusted header to 0 for the Matches sheet
     schema = pd.read_excel(file_name, sheet_name="Matches", header=0)
     schema.columns = schema.columns.str.strip()
-    
-    # Advanced Cleaning: Extract only digits (Fixes '244 l' to 244)
     team_cols = ['red1', 'red2', 'red3', 'blue1', 'blue2', 'blue3']
     for col in team_cols:
         schema[col] = schema[col].astype(str).str.extract(r'(\d+)').fillna(0).astype(int)
     
-    schema = schema.dropna(subset=['match_number'])
+    data = pd.read_excel(file_name, sheet_name="Data_Input")
+    data.columns = data.columns.str.strip()
+    for col in ['+1', '+3', '+5', 'Amount in Hub']:
+        data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
+    data['Total Score'] = data['+1'] + data['+3'] + data['+5']
+    
+    def clean_bool(val):
+        v = str(val).lower()
+        return 1 if v in ['true', '1', '1.0', 'yes', 'y'] else 0
+
+    data['Moved_Num'] = data['Moved?'].apply(clean_bool)
+    data['Died_Num'] = data['Died?'].apply(clean_bool)
+    data['Tipped_Num'] = data['Tipped/Fell Over?'].apply(clean_bool)
+    data['Defense_Num'] = data['Defence/ to other side'].apply(clean_bool)
+    for col in ['PickUp Ground', 'PickUP Human Player', 'PickUp Depot']:
+        data[col] = data[col].apply(clean_bool)
+    
+    pit = pd.read_excel(file_name, sheet_name="Pit_Input")
+    pit.columns = pit.columns.str.strip()
     return data, pit, schema
 
 try:
     df, pit_df, schema_df = load_frc_data()
 except Exception as e:
-    st.error(f"Excel Error: {e}. Ensure tabs 'Data_Input', 'Pit_Input', and 'Matches' exist.")
+    st.error(f"Excel Error: {e}")
     st.stop()
 
 # --- 2. HELPERS ---
 def get_team_stats(team_num):
     t_data = df[df['Team Number'] == team_num]
     if t_data.empty: 
-        return {"avg": 0, "count": 0, "auto_move": 0, "climb_pref": "N/A", "last_note": "No data", "driver": 0}
-    
-    match_count = int(t_data['Total Fuel'].count())
-    avg = (t_data['+1'].mean() + (t_data['+3'].mean() * 3) + (t_data['+5'].mean() * 5))
-    move = t_data['Moved?'].mean() * 100
-    climb_modes = t_data['Climbing'].dropna().mode()
-    climb = climb_modes.iloc[0] if not climb_modes.empty else "N/A"
-    # Column casing check: 'driver skill' (as found in your file)
+        return {"avg": 0, "count": 0, "auto_move": 0, "climb_pref": "N/A", "last_note": "No data", "driver": 0, "hub": 0}
+    avg = t_data['Total Score'].mean()
+    hub = t_data['Amount in Hub'].mean()
+    move = t_data['Moved_Num'].mean() * 100
+    climb = t_data['Climbing'].dropna().mode().iloc[0] if not t_data['Climbing'].dropna().empty else "N/A"
     driver = t_data['driver skill'].mean() if 'driver skill' in t_data else 0
-    note_df = t_data.dropna(subset=['Comments'])
-    note = note_df.iloc[-1]['Comments'] if not note_df.empty else "No notes"
+    note = t_data.dropna(subset=['Comments']).iloc[-1]['Comments'] if not t_data['Comments'].dropna().empty else "No notes"
+    return {"avg": avg, "count": int(t_data['Match Number'].count()), "auto_move": move, "climb_pref": climb, "last_note": note, "driver": driver, "hub": hub}
+
+# --- 3. SIDEBAR NAVIGATION & CONTROLS ---
+with st.sidebar:
+    st.title("🎮 Hub Control")
     
-    return {"avg": avg, "count": match_count, "auto_move": move, "climb_pref": climb, "last_note": note, "driver": driver}
+    # View Selector
+    view = st.radio("Navigation", ["🗺️ Field Map", "📊 Overview", "🤖 Deep Dive"], label_visibility="collapsed")
+    st.divider()
 
-# --- 3. TOP NAVIGATION BAR ---
-if 'view' not in st.session_state:
-    st.session_state.view = "Field Map"
-
-nav_cols = st.columns([1.2, 1.2, 1.2, 1.5, 1.5, 0.6])
-with nav_cols[0]:
-    if st.button("🗺️ Field Map", type="primary" if st.session_state.view == "Field Map" else "secondary"):
-        st.session_state.view = "Field Map"; st.rerun()
-with nav_cols[1]:
-    if st.button("📊 Overview", type="primary" if st.session_state.view == "Overview" else "secondary"):
-        st.session_state.view = "Overview"; st.rerun()
-with nav_cols[2]:
-    if st.button("🤖 Deep Dive", type="primary" if st.session_state.view == "Deep Dive" else "secondary"):
-        st.session_state.view = "Deep Dive"; st.rerun()
-
-with nav_cols[3]:
-    if st.session_state.view in ["Field Map", "Overview"]:
+    # Match/Team Selectors (Top Left in Sidebar)
+    if view in ["🗺️ Field Map", "📊 Overview"]:
         m_list = sorted(schema_df['match_number'].unique().astype(int))
-        selected_match = st.selectbox("Match", m_list, label_visibility="collapsed")
+        selected_match = st.selectbox("Select Match", m_list, key="m_sel")
         row = schema_df[schema_df['match_number'] == selected_match].iloc[0]
         red_teams = [int(row['red1']), int(row['red2']), int(row['red3'])]
         blue_teams = [int(row['blue1']), int(row['blue2']), int(row['blue3'])]
+        
         red_pred = sum(get_team_stats(t)['avg'] for t in red_teams if t > 0)
         blue_pred = sum(get_team_stats(t)['avg'] for t in blue_teams if t > 0)
+        
+        # Prediction underneath Selector
+        st.markdown(f"""
+        <div class="sidebar-predict">
+            <div style="color:#FF4B4B; font-weight:bold;">RED: {round(red_pred,1)}</div>
+            <div style="color:#1F77B4; font-weight:bold;">BLUE: {round(blue_pred,1)}</div>
+            <div style="font-size:11px; color:grey; margin-top:5px;">Win Prob: {'RED' if red_pred > blue_pred else 'BLUE'}</div>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         t_list = sorted(set(df['Team Number'].unique()) | set(pit_df['team_number'].unique()))
-        selected_team = st.selectbox("Team", [t for t in t_list if t > 0], label_visibility="collapsed")
+        selected_team = st.selectbox("Select Team", [t for t in t_list if t > 0], key="t_sel")
 
-with nav_cols[4]:
-    if st.session_state.view != "Deep Dive":
-        st.markdown(f"🔴 **{round(red_pred,1)}** vs 🔵 **{round(blue_pred,1)}**")
-
-with nav_cols[5]:
-    if st.button("🔄 Sync"):
-        st.cache_data.clear(); st.rerun()
-
-st.divider()
+    # Push Sync to bottom
+    st.markdown("<br>" * 10, unsafe_allow_html=True)
+    if st.button("🔄 Sync Data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
 # --- 4. VIEW: FIELD MAP ---
-if st.session_state.view == "Field Map":
-    st.markdown(f"### 🏟️ Match {selected_match} Strategic Map")
+if view == "🗺️ Field Map":
+    st.subheader(f"Strategic Map - Match {selected_match}")
     
-    red_col, field_col, blue_col = st.columns([1, 2.5, 1])
-    
-    def info_card(team_num, color):
+    # Team Cards helper
+    def detailed_card(team_num, color_hex):
         s = get_team_stats(team_num)
-        reliability_style = "color: #FF4B4B;" if s['count'] < 2 else "color: #BDC3C7;"
-        st.markdown(f"""<div class="team-info-box" style="border-left-color: {color};">
-            <b>Team {team_num}</b> <span class="reliability-badge" style="{reliability_style}">Data: {s['count']}m</span><br>
-            Avg: {round(s['avg'], 1)} | Climb: {s['climb_pref']}<br>
-            Auto: {round(s['auto_move'])}% | Skill: {round(s['driver'],1)}
-        </div>""", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="team-info-box-detailed" style="border-top-color: {color_hex};">
+            <div class="stat-row"><b>{team_num}</b> <span>{s['count']} matches</span></div>
+            <div class="stat-row">Avg: <b>{round(s['avg'], 1)}</b> <span>Auto: {round(s['auto_move'])}%</span></div>
+            <div class="stat-row">Climb: {s['climb_pref']} <span>Skill: {round(s['driver'], 1)}</span></div>
+            <div class="note-text">{s['last_note'][:75]}...</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    with red_col:
-        st.subheader("🔴 Red Alliance")
-        for t in red_teams: info_card(t, "#FF4B4B")
-            
-    with field_col:
-        if os.path.exists("field.png"):
-            with open("field.png", "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode()
-            
-            html_content = f"""
-            <div id="field-container" style="position: relative; width: 100%; border: 2px solid #555; border-radius: 10px; overflow: hidden; user-select: none;">
-                <img src="data:image/png;base64,{img_b64}" style="width: 100%; display: block; pointer-events: none;">
-                <div class="bot red" id="r1" style="left: 5%; top: 20%;">{red_teams[0]}</div>
-                <div class="bot red" id="r2" style="left: 5%; top: 45%;">{red_teams[1]}</div>
-                <div class="bot red" id="r3" style="left: 5%; top: 70%;">{red_teams[2]}</div>
-                <div class="bot blue" id="b1" style="right: 5%; top: 20%;">{blue_teams[0]}</div>
-                <div class="bot blue" id="b2" style="right: 5%; top: 45%;">{blue_teams[1]}</div>
-                <div class="bot blue" id="b3" style="right: 5%; top: 70%;">{blue_teams[2]}</div>
-            </div>
-            <style>
-                .bot {{
-                    position: absolute; width: 50px; height: 50px; border-radius: 50%;
-                    color: white; font-family: sans-serif; font-weight: bold; font-size: 11px;
-                    display: flex; align-items: center; justify-content: center;
-                    border: 2px solid white; box-shadow: 0 4px 8px black;
-                    cursor: move; z-index: 100; touch-action: none;
-                }}
-                .red {{ background: rgba(255, 75, 75, 0.9); }}
-                .blue {{ background: rgba(31, 119, 180, 0.9); }}
-            </style>
-            <script>
-                const container = document.getElementById('field-container');
-                const bots = document.querySelectorAll('.bot');
-                bots.forEach(bot => {{
-                    let isDragging = false;
-                    let offsetX, offsetY;
-                    bot.addEventListener('mousedown', (e) => {{
-                        isDragging = true;
-                        offsetX = e.clientX - bot.getBoundingClientRect().left;
-                        offsetY = e.clientY - bot.getBoundingClientRect().top;
-                    }});
-                    document.addEventListener('mousemove', (e) => {{
-                        if (!isDragging) return;
-                        const rect = container.getBoundingClientRect();
-                        let x = ((e.clientX - rect.left - offsetX) / rect.width) * 100;
-                        let y = ((e.clientY - rect.top - offsetY) / rect.height) * 100;
-                        bot.style.left = Math.max(0, Math.min(94, x)) + '%';
-                        bot.style.top = Math.max(0, Math.min(92, y)) + '%';
-                    }});
-                    document.addEventListener('mouseup', () => isDragging = false);
-                }});
-            </script>
-            """
-            st.components.v1.html(html_content, height=550)
-        else:
-            st.warning("Please upload 'field.png' to use the tactical map.")
+    # Top Alliance Row
+    r_cols = st.columns(3)
+    for i, t in enumerate(red_teams):
+        with r_cols[i]: detailed_card(t, "#FF4B4B")
 
-    with blue_col:
-        st.subheader("🔵 Blue Alliance")
-        for t in blue_teams: info_card(t, "#1F77B4")
+    # Field Map (Expanded Width to reduce vertical gap)
+    if os.path.exists("field.png"):
+        with open("field.png", "rb") as f: img_b64 = base64.b64encode(f.read()).decode()
+        html_content = f"""
+        <div id="field-container" style="position: relative; width: 100%; max-width: 1000px; margin: 0 auto; border: 2px solid #555; border-radius: 12px; overflow: hidden; touch-action: none; background-color: #000;">
+            <img src="data:image/png;base64,{img_b64}" style="width: 100%; height: auto; display: block; pointer-events: none;">
+            <div class="bot red" style="left: 10%; top: 15%;">{red_teams[0]}</div>
+            <div class="bot red" style="left: 10%; top: 40%;">{red_teams[1]}</div>
+            <div class="bot red" style="left: 10%; top: 65%;">{red_teams[2]}</div>
+            <div class="bot blue" style="right: 10%; top: 15%;">{blue_teams[0]}</div>
+            <div class="bot blue" style="right: 10%; top: 40%;">{blue_teams[1]}</div>
+            <div class="bot blue" style="right: 10%; top: 65%;">{blue_teams[2]}</div>
+        </div>
+        <style>
+            .bot {{
+                position: absolute; width: 34px; height: 34px; border-radius: 50%;
+                color: white; font-family: sans-serif; font-weight: bold; font-size: 8px;
+                display: flex; align-items: center; justify-content: center;
+                border: 2px solid white; box-shadow: 0 4px 8px black; cursor: move; z-index: 100;
+            }}
+            .red {{ background: rgba(255, 75, 75, 0.95); }}
+            .blue {{ background: rgba(31, 119, 180, 0.95); }}
+        </style>
+        <script>
+            const container = document.getElementById('field-container');
+            const bots = document.querySelectorAll('.bot');
+            bots.forEach(bot => {{
+                let isDragging = false; let offsetX, offsetY;
+                const start = (e) => {{
+                    isDragging = true;
+                    const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                    const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+                    offsetX = clientX - bot.getBoundingClientRect().left;
+                    offsetY = clientY - bot.getBoundingClientRect().top;
+                }};
+                const move = (e) => {{
+                    if (!isDragging) return;
+                    const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+                    const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+                    const rect = container.getBoundingClientRect();
+                    let x = ((clientX - rect.left - offsetX) / rect.width) * 100;
+                    let y = ((clientY - rect.top - offsetY) / rect.height) * 100;
+                    bot.style.left = Math.max(0, Math.min(96, x)) + '%';
+                    bot.style.top = Math.max(0, Math.min(95, y)) + '%';
+                    if(e.type.includes('touch')) e.preventDefault();
+                }};
+                const end = () => isDragging = false;
+                bot.addEventListener('mousedown', start); bot.addEventListener('touchstart', start, {{passive: false}});
+                document.addEventListener('mousemove', move); document.addEventListener('touchmove', move, {{passive: false}});
+                document.addEventListener('mouseup', end); document.addEventListener('touchend', end);
+            }});
+        </script>
+        """
+        st.components.v1.html(html_content, height=420)
+
+    # Bottom Alliance Row
+    b_cols = st.columns(3)
+    for i, t in enumerate(blue_teams):
+        with b_cols[i]: detailed_card(t, "#1F77B4")
 
 # --- 5. VIEW: OVERVIEW ---
-elif st.session_state.view == "Overview":
-    st.title(f"📊 Match {selected_match} Alliance Comparison")
+elif view == "📊 Overview":
+    st.title(f"Alliance Comparison - Match {selected_match}")
     o1, o2 = st.columns(2)
-    def detail_card(t):
+    def detail_card_full(t):
         s = get_team_stats(t)
         with st.container(border=True):
             st.markdown(f"#### Team {t}")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Avg", round(s['avg'], 1))
-            c2.metric("Climb", s['climb_pref'])
-            c3.metric("Auto%", f"{round(s['auto_move'])}%")
-            c4.metric("Samples", s['count'])
-            st.write(f"**Notes:** {s['last_note']}")
+            c1.metric("Avg", round(s['avg'], 1)); c2.metric("Climb", s['climb_pref'])
+            c3.metric("Auto%", f"{round(s['auto_move'])}%"); c4.metric("Matches", s['count'])
+            st.info(f"**Last Comment:** {s['last_note']}")
     with o1:
         st.subheader("🔴 Red Alliance")
-        for t in red_teams: detail_card(t)
+        for t in red_teams: detail_card_full(t)
     with o2:
         st.subheader("🔵 Blue Alliance")
-        for t in blue_teams: detail_card(t)
+        for t in blue_teams: detail_card_full(t)
 
 # --- 6. VIEW: DEEP DIVE ---
-elif st.session_state.view == "Deep Dive":
-    st.title(f"🤖 Team {selected_team} Performance")
-    t_data = df[df['Team Number'] == selected_team]
-    team_matches = schema_df[(schema_df[['red1','red2','red3','blue1','blue2','blue3']] == selected_team).any(axis=1)][['match_number']]
-    merged = pd.merge(team_matches, t_data, left_on='match_number', right_on='Match Number', how='left')
-    merged['Match'] = merged['match_number'].apply(lambda x: f"M{int(x)}")
+elif view == "🤖 Deep Dive":
+    sel_t = selected_team
+    t_data = df[df['Team Number'] == sel_t]
+    stats = get_team_stats(sel_t)
+    p_data = pit_df[pit_df['team_number'] == sel_t]
+    name = p_data.iloc[0]['team name'] if not p_data.empty else "Unknown"
+
+    st.markdown(f"<div style='font-size: 42px; color: #4F8BF9; font-weight: 800;'>{sel_t}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size: 18px; color: #BDC3C7; margin-bottom: 10px;'>{name}</div>", unsafe_allow_html=True)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Avg Score", round(stats['avg'], 1))
+    m2.metric("Auto Move %", f"{round(stats['auto_move'])}%")
+    m3.metric("Avg Driver", f"{round(stats['driver'], 1)}/5")
+    m4.metric("Climb", stats['climb_pref'])
+    m5.metric("Matches", stats['count'])
+
+    st.divider()
+    col_l, col_r = st.columns([2, 1])
     
-    st.metric("Total Matches Scouted", int(t_data['Total Fuel'].count()))
-    
-    fig = px.line(merged.dropna(subset=['Total Fuel']), x="Match", y="Total Fuel", markers=True, template="plotly_dark")
-    fig.update_layout(xaxis_type='category', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(t_data.dropna(subset=['Comments'])[['Match Number', 'Comments']], use_container_width=True, hide_index=True)
+    with col_l:
+        st.subheader("📈 Performance Trend")
+        team_matches = schema_df[(schema_df[['red1','red2','red3','blue1','blue2','blue3']] == sel_t).any(axis=1)][['match_number']]
+        merged = pd.merge(team_matches, df[df['Team Number'] == sel_t], left_on='match_number', right_on='Match Number', how='left')
+        merged['X_Label'] = merged['match_number'].apply(lambda x: f"M{int(x)}")
+        st.plotly_chart(px.line(merged.dropna(subset=['Total Score']), x="X_Label", y="Total Score", markers=True, template="plotly_dark", height=300), use_container_width=True)
+
+        st.subheader("Habit Breakdown")
+        pickups = t_data[['PickUp Ground', 'PickUP Human Player', 'PickUp Depot']].mean() * 100
+        st.plotly_chart(px.bar(x=pickups.index.tolist(), y=pickups.values.tolist(), height=250, template="plotly_dark", labels={'x':'Pickup Loc','y':'% Usage'}), use_container_width=True)
+
+    with col_r:
+        st.subheader("⚠️ Reliability")
+        died = t_data['Died_Num'].sum(); tipped = t_data['Tipped_Num'].sum()
+        if died > 0: st.error(f"Died in {int(died)} matches")
+        if tipped > 0: st.warning(f"Tipped in {int(tipped)} matches")
+        
+        st.subheader("🪜 Climb Dist.")
+        climbs = t_data['Climbing'].value_counts()
+        st.plotly_chart(px.bar(x=climbs.index.tolist(), y=climbs.values.tolist(), height=200, template="plotly_dark"), use_container_width=True)
+        
+        if not p_data.empty:
+            st.subheader("🛠️ Pit Specs")
+            st.dataframe(p_data.T, use_container_width=True)
+
+    st.divider()
+    st.subheader("💬 Scout Comments")
+    notes_df = t_data.dropna(subset=['Comments'])[['Match Number', 'Comments', 'driver skill']].sort_values('Match Number', ascending=False)
+    st.table(notes_df)
