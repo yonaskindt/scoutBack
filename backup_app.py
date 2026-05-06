@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import os
 import base64
-import re
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="FRC Scouting Hub", layout="wide", initial_sidebar_state="collapsed")
@@ -11,6 +10,7 @@ st.set_page_config(page_title="FRC Scouting Hub", layout="wide", initial_sidebar
 # --- CUSTOM CSS ---
 st.markdown("""
     <style>
+    /* Navigation Bar Container */
     [data-testid="stHorizontalBlock"] {
         background-color: rgba(255, 255, 255, 0.05);
         padding: 10px 15px;
@@ -22,6 +22,7 @@ st.markdown("""
     div.stButton > button { width: 100%; border-radius: 5px; height: 3em; font-weight: bold; }
     .stButton > button[kind="primary"] { background-color: #4F8BF9 !important; color: white !important; border: 1px solid #FFFFFF; }
     [data-testid="stMetricValue"] { font-size: 24px; font-weight: 800; color: #FFFFFF !important; }
+    
     .team-info-box {
         padding: 10px;
         border-radius: 8px;
@@ -30,13 +31,6 @@ st.markdown("""
         margin-bottom: 8px;
         font-size: 13px;
     }
-    .reliability-badge {
-        font-size: 11px;
-        background: rgba(255,255,255,0.1);
-        padding: 2px 6px;
-        border-radius: 10px;
-        color: #BDC3C7;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -44,26 +38,18 @@ st.markdown("""
 @st.cache_data
 def load_frc_data():
     file_name = "scouting_data.xlsx"
-    
-    # Match Data (Data_Input)
     data = pd.read_excel(file_name, sheet_name="Data_Input")
     for col in ['+1', '+3', '+5']:
         data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
     data['Total Fuel'] = data['+1'] + data['+3'] + data['+5']
-    # Handles booleans or "true"/"false" strings
-    data['Moved?'] = data['Moved?'].astype(str).str.lower().map({'true': 1, '1': 1, '1.0': 1, 'false': 0, '0': 0, '0.0': 0}).fillna(0)
+    data['Moved?'] = pd.to_numeric(data['Moved?'], errors='coerce').fillna(0)
     
-    # Pit Data
     pit = pd.read_excel(file_name, sheet_name="Pit_Input")
-    
-    # Matches Schema - Adjusted header to 0 for the Matches sheet
-    schema = pd.read_excel(file_name, sheet_name="Matches", header=0)
+    schema = pd.read_excel(file_name, sheet_name="Scouting schema", header=1)
     schema.columns = schema.columns.str.strip()
-    
-    # Advanced Cleaning: Extract only digits (Fixes '244 l' to 244)
     team_cols = ['red1', 'red2', 'red3', 'blue1', 'blue2', 'blue3']
     for col in team_cols:
-        schema[col] = schema[col].astype(str).str.extract(r'(\d+)').fillna(0).astype(int)
+        schema[col] = pd.to_numeric(schema[col], errors='coerce').fillna(0).astype(int)
     
     schema = schema.dropna(subset=['match_number'])
     return data, pit, schema
@@ -71,26 +57,22 @@ def load_frc_data():
 try:
     df, pit_df, schema_df = load_frc_data()
 except Exception as e:
-    st.error(f"Excel Error: {e}. Ensure tabs 'Data_Input', 'Pit_Input', and 'Matches' exist.")
+    st.error(f"Excel Error: {e}")
     st.stop()
 
 # --- 2. HELPERS ---
 def get_team_stats(team_num):
     t_data = df[df['Team Number'] == team_num]
     if t_data.empty: 
-        return {"avg": 0, "count": 0, "auto_move": 0, "climb_pref": "N/A", "last_note": "No data", "driver": 0}
-    
-    match_count = int(t_data['Total Fuel'].count())
+        return {"avg": 0, "auto_move": 0, "climb_pref": "N/A", "last_note": "No data", "driver": 0}
     avg = (t_data['+1'].mean() + (t_data['+3'].mean() * 3) + (t_data['+5'].mean() * 5))
     move = t_data['Moved?'].mean() * 100
     climb_modes = t_data['Climbing'].dropna().mode()
     climb = climb_modes.iloc[0] if not climb_modes.empty else "N/A"
-    # Column casing check: 'driver skill' (as found in your file)
     driver = t_data['driver skill'].mean() if 'driver skill' in t_data else 0
     note_df = t_data.dropna(subset=['Comments'])
     note = note_df.iloc[-1]['Comments'] if not note_df.empty else "No notes"
-    
-    return {"avg": avg, "count": match_count, "auto_move": move, "climb_pref": climb, "last_note": note, "driver": driver}
+    return {"avg": avg, "auto_move": move, "climb_pref": climb, "last_note": note, "driver": driver}
 
 # --- 3. TOP NAVIGATION BAR ---
 if 'view' not in st.session_state:
@@ -138,15 +120,12 @@ if st.session_state.view == "Field Map":
     
     def info_card(team_num, color):
         s = get_team_stats(team_num)
-        reliability_style = "color: #FF4B4B;" if s['count'] < 2 else "color: #BDC3C7;"
         st.markdown(f"""<div class="team-info-box" style="border-left-color: {color};">
-            <b>Team {team_num}</b> <span class="reliability-badge" style="{reliability_style}">Data: {s['count']}m</span><br>
-            Avg: {round(s['avg'], 1)} | Climb: {s['climb_pref']}<br>
-            Auto: {round(s['auto_move'])}% | Skill: {round(s['driver'],1)}
+            <b>Team {team_num}</b><br>Avg: {round(s['avg'], 1)} | Climb: {s['climb_pref']}<br>Auto: {round(s['auto_move'])}% | Note: {s['last_note']}
         </div>""", unsafe_allow_html=True)
 
     with red_col:
-        st.subheader("🔴 Red Alliance")
+        st.subheader("🔴 Red")
         for t in red_teams: info_card(t, "#FF4B4B")
             
     with field_col:
@@ -154,6 +133,7 @@ if st.session_state.view == "Field Map":
             with open("field.png", "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode()
             
+            # DRAGGABLE ENGINE FOR 6 ROBOTS
             html_content = f"""
             <div id="field-container" style="position: relative; width: 100%; border: 2px solid #555; border-radius: 10px; overflow: hidden; user-select: none;">
                 <img src="data:image/png;base64,{img_b64}" style="width: 100%; display: block; pointer-events: none;">
@@ -178,14 +158,17 @@ if st.session_state.view == "Field Map":
             <script>
                 const container = document.getElementById('field-container');
                 const bots = document.querySelectorAll('.bot');
+                
                 bots.forEach(bot => {{
                     let isDragging = false;
                     let offsetX, offsetY;
+
                     bot.addEventListener('mousedown', (e) => {{
                         isDragging = true;
                         offsetX = e.clientX - bot.getBoundingClientRect().left;
                         offsetY = e.clientY - bot.getBoundingClientRect().top;
                     }});
+
                     document.addEventListener('mousemove', (e) => {{
                         if (!isDragging) return;
                         const rect = container.getBoundingClientRect();
@@ -194,16 +177,15 @@ if st.session_state.view == "Field Map":
                         bot.style.left = Math.max(0, Math.min(94, x)) + '%';
                         bot.style.top = Math.max(0, Math.min(92, y)) + '%';
                     }});
+
                     document.addEventListener('mouseup', () => isDragging = false);
                 }});
             </script>
             """
             st.components.v1.html(html_content, height=550)
-        else:
-            st.warning("Please upload 'field.png' to use the tactical map.")
 
     with blue_col:
-        st.subheader("🔵 Blue Alliance")
+        st.subheader("🔵 Blue")
         for t in blue_teams: info_card(t, "#1F77B4")
 
 # --- 5. VIEW: OVERVIEW ---
@@ -214,29 +196,25 @@ elif st.session_state.view == "Overview":
         s = get_team_stats(t)
         with st.container(border=True):
             st.markdown(f"#### Team {t}")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
             c1.metric("Avg", round(s['avg'], 1))
             c2.metric("Climb", s['climb_pref'])
             c3.metric("Auto%", f"{round(s['auto_move'])}%")
-            c4.metric("Samples", s['count'])
             st.write(f"**Notes:** {s['last_note']}")
     with o1:
-        st.subheader("🔴 Red Alliance")
+        st.subheader("🔴 Red")
         for t in red_teams: detail_card(t)
     with o2:
-        st.subheader("🔵 Blue Alliance")
+        st.subheader("🔵 Blue")
         for t in blue_teams: detail_card(t)
 
 # --- 6. VIEW: DEEP DIVE ---
 elif st.session_state.view == "Deep Dive":
     st.title(f"🤖 Team {selected_team} Performance")
     t_data = df[df['Team Number'] == selected_team]
-    team_matches = schema_df[(schema_df[['red1','red2','red3','blue1','blue2','blue3']] == selected_team).any(axis=1)][['match_number']]
-    merged = pd.merge(team_matches, t_data, left_on='match_number', right_on='Match Number', how='left')
+    merged = pd.merge(schema_df[(schema_df[['red1','red2','red3','blue1','blue2','blue3']] == selected_team).any(axis=1)][['match_number']], 
+                      t_data, left_on='match_number', right_on='Match Number', how='left')
     merged['X_Label'] = merged['match_number'].apply(lambda x: f"M{int(x)}")
-    
-    st.metric("Total Matches Scouted", int(t_data['Total Fuel'].count()))
-    
     fig = px.line(merged.dropna(subset=['Total Fuel']), x="X_Label", y="Total Fuel", markers=True, template="plotly_dark")
     fig.update_layout(xaxis_type='category', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     st.plotly_chart(fig, use_container_width=True)
