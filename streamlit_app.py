@@ -30,10 +30,10 @@ if 'playoff_blue_out' not in st.session_state: st.session_state.playoff_blue_out
 st.markdown("""
     <style>
     .main .block-container { max-width: 100%; padding: 0.5rem 1rem; }
-    .team-info-box-detailed { padding: 8px; border-radius: 8px; border-top: 4px solid; background-color: rgba(255, 255, 255, 0.08); font-size: 12px; box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 2px; }
+    .team-info-box-detailed { padding: 6px; border-radius: 8px; border-top: 4px solid; background-color: rgba(255, 255, 255, 0.08); font-size: 11px; box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 4px; }
     .stat-row { display: flex; justify-content: space-between; margin-bottom: 1px; }
     .note-text { font-style: italic; font-size: 10px; color: #BDC3C7; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3px; padding-top: 2px; height: 32px; overflow: hidden; }
-    .field-side-label { text-align: center; display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 380px; }
+    .field-side-label { text-align: center; display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 120px; }
     .side-big { font-size: 42px; font-weight: 900; color: #4F8BF9; line-height: 1; }
     .side-small { font-size: 11px; color: #BDC3C7; text-transform: uppercase; margin-top: -5px; }
     .staging-area { background: rgba(79, 139, 249, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #4F8BF9; margin-bottom: 20px; text-align: center; }
@@ -103,71 +103,74 @@ def detailed_card(team_num, color_hex):
         <div class="note-text">{s['last_note'][:75]}...</div>
     </div>""", unsafe_allow_html=True)
 
-def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_pred):
-    f_l, f_m, f_r = st.columns([0.7, 4.6, 0.7])
-    with f_l: st.markdown(f'<div class="field-side-label"><div class="side-big">{match_label}</div><div class="side-small">MATCH</div></div>', unsafe_allow_html=True)
-    img_file, aspect, max_w, max_h = ("field.png", "45%", "100%", "450px") if st.session_state.comp_mode == "FRC" else ("ftcfield.png", "100%", "550px", "600px")
+def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_pred, width_mode="FRC"):
+    img_file = "field.png" if width_mode == "FRC" else "ftcfield.png"
+    # Aspect Ratio Fix: FRC=Panoramic (25% padding), FTC=Square (100%)
+    aspect = "25%" if width_mode == "FRC" else "100%"
+    max_w = "100%" if width_mode == "FRC" else "550px"
+    max_h = "380px" if width_mode == "FRC" else "550px"
+    
     img_b64 = ""
     if os.path.exists(img_file):
         with open(img_file, "rb") as f: img_b64 = base64.b64encode(f.read()).decode()
-    with f_m:
-        red_bots = "".join([f'<div class="bot red" style="left: 15%; top: {25+(i*35)}%;" id="r{i}">{red_teams[i]}</div>' for i in range(len(red_teams))])
-        blue_bots = "".join([f'<div class="bot blue" style="right: 15%; top: {25+(i*35)}%;" id="b{i}">{blue_teams[i]}</div>' for i in range(len(blue_teams))])
-        html_content = f"""
-        <div id="controls" style="display:flex; gap:10px; margin:0 auto; max-width:{max_w}; padding-bottom:2px;">
-            <button onclick="setMode('move')" style="flex:1; padding:8px; cursor:pointer; background:#4F8BF9; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Move</button>
-            <button onclick="setMode('draw')" style="flex:1; padding:8px; cursor:pointer; background:#2ECC71; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Draw</button>
-            <button onclick="clearCanvas()" style="flex:0.5; padding:8px; cursor:pointer; background:#E74C3C; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Clear</button>
+    
+    red_bots = "".join([f'<div class="bot red" style="left: 15%; top: {25+(i*35)}%;" id="r{i}">{red_teams[i]}</div>' for i in range(len(red_teams))])
+    blue_bots = "".join([f'<div class="bot blue" style="right: 15%; top: {25+(i*35)}%;" id="b{i}">{blue_teams[i]}</div>' for i in range(len(blue_teams))])
+
+    html_content = f"""
+    <div id="controls" style="display:flex; gap:10px; margin:0 auto; max-width:{max_w}; padding:0 0 4px 0;">
+        <button onclick="setMode('move')" style="flex:1; padding:8px; cursor:pointer; background:#4F8BF9; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Move</button>
+        <button onclick="setMode('draw')" style="flex:1; padding:8px; cursor:pointer; background:#2ECC71; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Draw</button>
+        <button onclick="clearCanvas()" style="flex:0.5; padding:8px; cursor:pointer; background:#E74C3C; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Clear</button>
+    </div>
+    <div id="field-viewport" style="width:100%; max-width:{max_w}; margin:0 auto; overflow:hidden; border: 2px solid #555; border-radius: 8px; background:#000; line-height:0;">
+        <div id="field-container" style="position: relative; width: 100%; padding-bottom: {aspect}; height: 0; touch-action: none; margin:0;">
+            <img src="data:image/png;base64,{img_b64}" style="position:absolute; top:0; left:0; width:100%; height:100%; object-fit: contain; pointer-events: none; display:block;">
+            <canvas id="strategy-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; z-index:10; cursor:crosshair; pointer-events:none;"></canvas>
+            {red_bots} {blue_bots}
         </div>
-        <div id="field-viewport" style="width:100%; max-width:{max_w}; margin:0 auto; overflow:hidden; border: 2px solid #555; border-radius: 8px; background:#000;">
-            <div id="field-container" style="position: relative; width: 100%; height: {max_h}; touch-action: none; margin-top:0;">
-                <img src="data:image/png;base64,{img_b64}" style="width:100%; height:100%; object-fit: contain; pointer-events: none; display:block;">
-                <canvas id="strategy-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; z-index:10; cursor:crosshair; pointer-events:none;"></canvas>
-                {red_bots} {blue_bots}
-            </div>
-        </div>
-        <style>
-            .bot {{ position: absolute; width: 38px; height: 38px; border-radius: 50%; color: white; font-family: sans-serif; font-weight: bold; font-size: 10px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 4px 8px black; cursor: grab; z-index: 20; touch-action: none; transform: translate(-50%, -50%); }}
-            .bot:active {{ cursor: grabbing; }} .red {{ background: #FF4B4B; }} .blue {{ background: #1F77B4; }}
-        </style>
-        <script>
-            const canvas = document.getElementById('strategy-canvas'); const ctx = canvas.getContext('2d');
-            const container = document.getElementById('field-container'); const bots = document.querySelectorAll('.bot');
-            let mode = 'move'; let drawing = false;
-            function setMode(m) {{ mode = m; canvas.style.pointerEvents = (m === 'draw' ? 'auto' : 'none'); }}
-            function clearCanvas() {{ ctx.clearRect(0, 0, canvas.width, canvas.height); }}
-            function resize() {{ canvas.width = container.clientWidth; canvas.height = container.clientHeight; }}
-            window.onload = resize; window.onresize = resize; setTimeout(resize, 100);
-            function getPos(e) {{
-                const rect = canvas.getBoundingClientRect();
-                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-                return {{ x: clientX - rect.left, y: clientY - rect.top }};
-            }}
-            canvas.addEventListener('mousedown', e => {{ if(mode==='draw') {{ drawing=true; const p=getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }} }});
-            canvas.addEventListener('mousemove', e => {{ if(drawing && mode==='draw') {{ const p=getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }});
-            canvas.addEventListener('mouseup', () => drawing=false);
-            canvas.addEventListener('touchstart', e => {{ if(mode==='draw') {{ drawing=true; const p=getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }} }}, {{passive:false}});
-            canvas.addEventListener('touchmove', e => {{ if(drawing && mode==='draw') {{ const p=getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }}, {{passive:false}});
-            canvas.addEventListener('touchend', () => drawing=false);
-            bots.forEach(bot => {{
-                let isDragging = false;
-                const move = (e) => {{
-                    if (!isDragging) return; const evt = e.touches ? e.touches[0] : e;
-                    const rect = container.getBoundingClientRect();
-                    bot.style.left = ((evt.clientX - rect.left) / rect.width * 100) + '%';
-                    bot.style.top = ((evt.clientY - rect.top) / rect.height * 100) + '%';
-                    if(e.touches) e.preventDefault();
-                }};
-                bot.addEventListener('mousedown', () => {{ if(mode==='move') isDragging = true; }});
-                bot.addEventListener('touchstart', () => {{ if(mode==='move') isDragging = true; }}, {{passive:false}});
-                document.addEventListener('mousemove', move); document.addEventListener('touchmove', move, {{passive:false}});
-                document.addEventListener('mouseup', () => isDragging = false); document.addEventListener('touchend', () => isDragging = false);
-            }});
-        </script>
-        """
-        st.components.v1.html(html_content, height=680 if st.session_state.comp_mode == "FTC" else 520)
-    with f_r: st.markdown(f'<div class="field-side-label"><div style="color:#FF4B4B; font-size:10px;">RED</div><div style="font-size:24px; font-weight:900;">{round(red_pred,1)}</div><div style="height:20px;"></div><div style="color:#1F77B4; font-size:10px;">BLUE</div><div style="font-size:24px; font-weight:900;">{round(blue_pred,1)}</div></div>', unsafe_allow_html=True)
+    </div>
+    <style>
+        .bot {{ position: absolute; width: 38px; height: 38px; border-radius: 50%; color: white; font-family: sans-serif; font-weight: bold; font-size: 10px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 4px 8px black; cursor: grab; z-index: 20; touch-action: none; transform: translate(-50%, -50%); }}
+        .bot:active {{ cursor: grabbing; }} .red {{ background: #FF4B4B; }} .blue {{ background: #1F77B4; }}
+    </style>
+    <script>
+        const canvas = document.getElementById('strategy-canvas'); const ctx = canvas.getContext('2d');
+        const container = document.getElementById('field-container'); const bots = document.querySelectorAll('.bot');
+        let mode = 'move'; let drawing = false;
+        function setMode(m) {{ mode = m; canvas.style.pointerEvents = (m === 'draw' ? 'auto' : 'none'); }}
+        function clearCanvas() {{ ctx.clearRect(0, 0, canvas.width, canvas.height); }}
+        function resize() {{ canvas.width = container.clientWidth; canvas.height = container.clientHeight; }}
+        window.onload = resize; window.onresize = resize; setTimeout(resize, 100);
+        function getPos(e) {{
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {{ x: clientX - rect.left, y: clientY - rect.top }};
+        }}
+        canvas.addEventListener('mousedown', e => {{ if(mode==='draw') {{ drawing=true; const p=getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }} }});
+        canvas.addEventListener('mousemove', e => {{ if(drawing && mode==='draw') {{ const p=getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }});
+        canvas.addEventListener('mouseup', () => drawing=false);
+        canvas.addEventListener('touchstart', e => {{ if(mode==='draw') {{ drawing=true; const p=getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }} }}, {{passive:false}});
+        canvas.addEventListener('touchmove', e => {{ if(drawing && mode==='draw') {{ const p=getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }}, {{passive:false}});
+        canvas.addEventListener('touchend', () => drawing=false);
+        bots.forEach(bot => {{
+            let isDragging = false;
+            const move = (e) => {{
+                if (!isDragging) return; const evt = e.touches ? e.touches[0] : e;
+                const rect = container.getBoundingClientRect();
+                bot.style.left = ((evt.clientX - rect.left) / rect.width * 100) + '%';
+                bot.style.top = ((evt.clientY - rect.top) / rect.height * 100) + '%';
+                if(e.touches) e.preventDefault();
+            }};
+            bot.addEventListener('mousedown', () => {{ if(mode==='move') isDragging = true; }});
+            bot.addEventListener('touchstart', () => {{ if(mode==='move') isDragging = true; }}, {{passive:false}});
+            document.addEventListener('mousemove', move); document.addEventListener('touchmove', move, {{passive:false}});
+            document.addEventListener('mouseup', () => isDragging = false); document.addEventListener('touchend', () => isDragging = false);
+        }});
+    </script>
+    """
+    st.components.v1.html(html_content, height=620 if width_mode == "FTC" else 460)
 
 # --- 3. VIEWS ---
 with st.sidebar:
@@ -177,62 +180,34 @@ with st.sidebar:
         st.session_state.m_sel_val = st.selectbox("Select Match", m_list, index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0)
     if st.button("🔄 Sync Data", use_container_width=True): st.cache_data.clear(); st.rerun()
 
-if view == "🏆 Playoffs":
-    st.title(f"🏆 {st.session_state.comp_mode} Playoffs")
-    a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
-    c1, c2 = st.columns(2)
-    with c1:
-        r_choice = st.selectbox("🔴 Red Alliance", a_names, index=0)
-        r_row = alliance_df.iloc[a_names.index(r_choice)]
-        r_roster = [int(r_row['C']), int(r_row['1e']), int(r_row['2e'])] if '2e' in r_row else [int(r_row['C']), int(r_row['1e'])]
-        if '3e' in r_row and pd.notna(r_row['3e']):
-            swap_r = st.toggle("Use Red Backup?", value=st.session_state.playoff_red_swap)
-            if swap_r:
-                out_r = st.selectbox("Red to sit out", r_roster, index=r_roster.index(st.session_state.playoff_red_out) if st.session_state.playoff_red_out in r_roster else 0)
-                st.session_state.playoff_red_out = out_r
-                r_roster = [int(r_row['3e']) if x == out_r else x for x in r_roster]
-    with c2:
-        b_choice = st.selectbox("🔵 Blue Alliance", a_names, index=min(1, len(a_names)-1))
-        b_row = alliance_df.iloc[a_names.index(b_choice)]
-        b_roster = [int(b_row['C']), int(b_row['1e']), int(b_row['2e'])] if '2e' in b_row else [int(b_row['C']), int(b_row['1e'])]
-        if '3e' in b_row and pd.notna(b_row['3e']):
-            swap_b = st.toggle("Use Blue Backup?", value=st.session_state.playoff_blue_swap)
-            if swap_b:
-                out_b = st.selectbox("Blue to sit out", b_roster, index=b_roster.index(st.session_state.playoff_blue_out) if st.session_state.playoff_blue_out in b_roster else 0)
-                st.session_state.playoff_blue_out = out_b
-                b_roster = [int(b_row['3e']) if x == out_b else x for x in b_roster]
-    rc = st.columns(len(r_roster))
-    for i, t in enumerate(r_roster):
-        with rc[i]: detailed_card(t, "#FF4B4B")
-    render_field_interactive(r_roster, b_roster, "PLAYOFF", sum(get_team_stats(t)['avg'] for t in r_roster), sum(get_team_stats(t)['avg'] for t in b_roster))
-    bc = st.columns(len(b_roster))
-    for i, t in enumerate(b_roster):
-        with bc[i]: detailed_card(t, "#1F77B4")
-
-elif view == "🗺️ Field Map":
+if view == "🗺️ Field Map":
     m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
-    r_keys, b_keys = [c for c in ['red1','red2','red3'] if c in m_row.index and pd.notna(m_row[c])], [c for c in ['blue1','blue2','blue3'] if c in m_row.index and pd.notna(m_row[c])]
+    r_keys = [c for c in ['red1','red2','red3'] if c in m_row.index and pd.notna(m_row[c])]
+    b_keys = [c for c in ['blue1','blue2','blue3'] if c in m_row.index and pd.notna(m_row[c])]
     rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
-    rc = st.columns(len(rt))
-    for i, t in enumerate(rt):
-        with rc[i]: detailed_card(t, "#FF4B4B")
-    render_field_interactive(rt, bt, st.session_state.m_sel_val, sum(get_team_stats(t)['avg'] for t in rt), sum(get_team_stats(t)['avg'] for t in bt))
-    bc = st.columns(len(bt))
-    for i, t in enumerate(bt):
-        with bc[i]: detailed_card(t, "#1F77B4")
-
-elif view == "📊 Overview":
-    m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
-    r_keys, b_keys = [c for c in ['red1','red2','red3'] if c in m_row.index and pd.notna(m_row[c])], [c for c in ['blue1','blue2','blue3'] if c in m_row.index and pd.notna(m_row[c])]
-    rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
-    st.title(f"Overview - Match {st.session_state.m_sel_val}")
-    o1, o2 = st.columns(2)
-    with o1:
-        st.subheader("🔴 Red Alliance")
-        for t in rt: detailed_card(t, "#FF4B4B")
-    with o2:
-        st.subheader("🔵 Blue Alliance")
-        for t in bt: detailed_card(t, "#1F77B4")
+    
+    if st.session_state.comp_mode == "FTC":
+        c1, c2, c3 = st.columns([1.2, 3.5, 1.2])
+        with c1:
+            st.markdown("<div style='text-align:center; color:#FF4B4B; font-weight:bold; margin-bottom:5px;'>RED</div>", unsafe_allow_html=True)
+            for t in rt: detailed_card(t, "#FF4B4B")
+        with c2:
+            render_field_interactive(rt, bt, st.session_state.m_sel_val, 0, 0, width_mode="FTC")
+            st.markdown(f"<div style='text-align:center; font-weight:bold; color:#BDC3C7;'>MATCH {st.session_state.m_sel_val}</div>", unsafe_allow_html=True)
+        with c3:
+            st.markdown("<div style='text-align:center; color:#1F77B4; font-weight:bold; margin-bottom:5px;'>BLUE</div>", unsafe_allow_html=True)
+            for t in bt: detailed_card(t, "#1F77B4")
+    else:
+        rc = st.columns(len(rt))
+        for i, t in enumerate(rt):
+            with rc[i]: detailed_card(t, "#FF4B4B")
+        f_l, f_m, f_r = st.columns([0.7, 4.6, 0.7])
+        with f_l: st.markdown(f'<div class="field-side-label"><div class="side-big">{st.session_state.m_sel_val}</div><div class="side-small">MATCH</div></div>', unsafe_allow_html=True)
+        with f_m: render_field_interactive(rt, bt, st.session_state.m_sel_val, 0, 0, width_mode="FRC")
+        with f_r: st.markdown(f'<div class="field-side-label"><div style="color:#FF4B4B; font-size:10px;">RED</div><div style="font-size:24px; font-weight:900;">{round(sum(get_team_stats(t)["avg"] for t in rt),1)}</div><div style="height:10px;"></div><div style="color:#1F77B4; font-size:10px;">BLUE</div><div style="font-size:24px; font-weight:900;">{round(sum(get_team_stats(t)["avg"] for t in bt),1)}</div></div>', unsafe_allow_html=True)
+        bc = st.columns(len(bt))
+        for i, t in enumerate(bt):
+            with bc[i]: detailed_card(t, "#1F77B4")
 
 elif view == "🤖 per team":
     t_list = sorted(set(df['Team Number'].unique()))
@@ -257,12 +232,12 @@ elif view == "🤖 per team":
         st.subheader("Match Logs")
         st.table(df[df['Team Number'] == sel_t].dropna(subset=['Comments'])[['Match Number', 'Comments']].sort_values('Match Number', ascending=False))
     with r:
+        if stats['died'] > 0: st.error(f"⚠️ Team Died/Tipped in {stats['died']} matches!")
         if st.session_state.comp_mode == "FRC" and not pit_df.empty:
             p_row = pit_df[pit_df['team_number'] == sel_t]
             if not p_row.empty:
                 st.subheader("🛠️ Pit Specifications")
                 st.dataframe(p_row.T, use_container_width=True)
-        if stats['died'] > 0: st.error(f"Died/Tipped in {stats['died']} matches")
 
 elif view == "🤝 Alliance Selection":
     st.title("🤝 Draft Board")
@@ -291,3 +266,49 @@ elif view == "🤝 Alliance Selection":
                                 st.session_state.alliances_state[i][key] = st.session_state.active_team_selection
                                 st.session_state.active_team_selection = None; st.rerun()
                             else: st.session_state.alliances_state[i][key] = 0; st.rerun()
+
+elif view == "📊 Overview":
+    m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
+    r_keys, b_keys = [c for c in ['red1','red2','red3'] if c in m_row.index and pd.notna(m_row[c])], [c for c in ['blue1','blue2','blue3'] if c in m_row.index and pd.notna(m_row[c])]
+    rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
+    st.title(f"Overview - Match {st.session_state.m_sel_val}")
+    o1, o2 = st.columns(2)
+    with o1:
+        st.subheader("🔴 Red Alliance")
+        for t in rt: detailed_card(t, "#FF4B4B")
+    with o2:
+        st.subheader("🔵 Blue Alliance")
+        for t in bt: detailed_card(t, "#1F77B4")
+
+elif view == "🏆 Playoffs":
+    st.title(f"🏆 {st.session_state.comp_mode} Playoffs")
+    a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
+    p_slots = [c for c in ['C', '1e', '2e'] if c in alliance_df.columns]
+    c1, c2 = st.columns(2)
+    with c1:
+        r_choice = st.selectbox("🔴 Red Alliance", a_names, index=0)
+        r_row = alliance_df.iloc[a_names.index(r_choice)]
+        r_roster = [int(r_row[k]) for k in p_slots if pd.notna(r_row[k])]
+        if '3e' in r_row and pd.notna(r_row['3e']):
+            swap_r = st.toggle("Use Red Backup?", value=st.session_state.playoff_red_swap)
+            if swap_r:
+                out_r = st.selectbox("Red to sit out", r_roster, index=r_roster.index(st.session_state.playoff_red_out) if st.session_state.playoff_red_out in r_roster else 0)
+                st.session_state.playoff_red_out = out_r
+                r_roster = [int(r_row['3e']) if x == out_r else x for x in r_roster]
+    with c2:
+        b_choice = st.selectbox("🔵 Blue Alliance", a_names, index=min(1, len(a_names)-1))
+        b_row = alliance_df.iloc[a_names.index(b_choice)]
+        b_roster = [int(b_row[k]) for k in p_slots if pd.notna(b_row[k])]
+        if '3e' in b_row and pd.notna(b_row['3e']):
+            swap_b = st.toggle("Use Blue Backup?", value=st.session_state.playoff_blue_swap)
+            if swap_b:
+                out_b = st.selectbox("Blue to sit out", b_roster, index=b_roster.index(st.session_state.playoff_blue_out) if st.session_state.playoff_blue_out in b_roster else 0)
+                st.session_state.playoff_blue_out = out_b
+                b_roster = [int(b_row['3e']) if x == out_b else x for x in b_roster]
+    rc = st.columns(len(r_roster))
+    for i, t in enumerate(r_roster):
+        with rc[i]: detailed_card(t, "#FF4B4B")
+    render_field_interactive(r_roster, b_roster, "PLAYOFF", sum(get_team_stats(t)['avg'] for t in r_roster), sum(get_team_stats(t)['avg'] for t in b_roster), width_mode=st.session_state.comp_mode)
+    bc = st.columns(len(b_roster))
+    for i, t in enumerate(b_roster):
+        with bc[i]: detailed_card(t, "#1F77B4")
