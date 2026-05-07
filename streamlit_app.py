@@ -103,8 +103,6 @@ def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_
     with f_l: st.markdown(f'<div class="field-side-label"><div class="side-big">{match_label}</div><div class="side-small">MATCH</div></div>', unsafe_allow_html=True)
     
     img_file = "field.png" if st.session_state.comp_mode == "FRC" else "ftcfield.png"
-    # Aspect ratios and strict height limits to remove the "pushed down" gap
-    # FRC: Panoramic (Wide), FTC: Square
     max_h = "450px" if st.session_state.comp_mode == "FRC" else "600px"
     max_w = "100%" if st.session_state.comp_mode == "FRC" else "600px"
     
@@ -124,7 +122,7 @@ def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_
         </div>
         <div id="field-viewport" style="width:100%; max-width:{max_w}; margin:0 auto; overflow:hidden; border: 2px solid #555; border-radius: 8px; background:#000;">
             <div id="field-container" style="position: relative; width: 100%; height: {max_h}; touch-action: none;">
-                <img src="data:image/png;base64,{img_b64}" style="width:100%; height:100%; object-fit: contain; pointer-events: none;">
+                <img src="data:image/png;base64,{img_b64}" style="width:100%; height:100%; object-fit: contain; pointer-events: none; margin:0; display:block;">
                 <canvas id="strategy-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; z-index:10; cursor:crosshair; pointer-events:none;"></canvas>
                 {red_bots} {blue_bots}
             </div>
@@ -138,25 +136,66 @@ def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_
             const canvas = document.getElementById('strategy-canvas'); const ctx = canvas.getContext('2d');
             const container = document.getElementById('field-container'); const bots = document.querySelectorAll('.bot');
             let mode = 'move'; let drawing = false;
+
             function setMode(m) {{ mode = m; canvas.style.pointerEvents = (m === 'draw' ? 'auto' : 'none'); }}
             function clearCanvas() {{ ctx.clearRect(0, 0, canvas.width, canvas.height); }}
             function resize() {{ canvas.width = container.clientWidth; canvas.height = container.clientHeight; }}
             window.onload = resize; window.onresize = resize; setTimeout(resize, 100);
-            canvas.addEventListener('mousedown', e => {{ if(mode==='draw') {{ drawing=true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); }} }});
-            canvas.addEventListener('mousemove', e => {{ if(drawing && mode==='draw') {{ ctx.lineTo(e.offsetX, e.offsetY); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }});
-            canvas.addEventListener('mouseup', () => drawing=false);
+
+            // --- DRAW LOGIC (MOUSE + TOUCH) ---
+            function getPos(e) {{
+                const rect = canvas.getBoundingClientRect();
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                return {{ x: clientX - rect.left, y: clientY - rect.top }};
+            }}
+
+            function startDraw(e) {{
+                if(mode !== 'draw') return;
+                drawing = true;
+                const pos = getPos(e);
+                ctx.beginPath();
+                ctx.moveTo(pos.x, pos.y);
+                if(e.touches) e.preventDefault();
+            }}
+
+            function moveDraw(e) {{
+                if(!drawing || mode !== 'draw') return;
+                const pos = getPos(e);
+                ctx.lineTo(pos.x, pos.y);
+                ctx.strokeStyle = '#2ECC71'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+                ctx.stroke();
+                if(e.touches) e.preventDefault();
+            }}
+
+            function stopDraw() {{ drawing = false; }}
+
+            canvas.addEventListener('mousedown', startDraw);
+            canvas.addEventListener('mousemove', moveDraw);
+            canvas.addEventListener('mouseup', stopDraw);
+            canvas.addEventListener('touchstart', startDraw, {{passive: false}});
+            canvas.addEventListener('touchmove', moveDraw, {{passive: false}});
+            canvas.addEventListener('touchend', stopDraw);
+
+            // --- MOVE LOGIC ---
             bots.forEach(bot => {{
-                let dragging = false;
+                let isDragging = false;
+                const start = () => {{ if(mode==='move') isDragging = true; }};
+                const end = () => isDragging = false;
                 const move = (e) => {{
-                    if (!dragging) return; const evt = e.touches ? e.touches[0] : e;
+                    if (!isDragging) return;
+                    const evt = e.touches ? e.touches[0] : e;
                     const rect = container.getBoundingClientRect();
                     bot.style.left = ((evt.clientX - rect.left) / rect.width * 100) + '%';
                     bot.style.top = ((evt.clientY - rect.top) / rect.height * 100) + '%';
+                    if(e.touches) e.preventDefault();
                 }};
-                bot.addEventListener('mousedown', () => {{ if(mode==='move') dragging = true; }});
-                bot.addEventListener('touchstart', (e) => {{ if(mode==='move') dragging = true; e.preventDefault(); }}, {{passive:false}});
-                document.addEventListener('mousemove', move); document.addEventListener('touchmove', move, {{passive:false}});
-                document.addEventListener('mouseup', () => dragging = false); document.addEventListener('touchend', () => dragging = false);
+                bot.addEventListener('mousedown', start);
+                bot.addEventListener('touchstart', start, {{passive: false}});
+                document.addEventListener('mousemove', move);
+                document.addEventListener('touchmove', move, {{passive: false}});
+                document.addEventListener('mouseup', end);
+                document.addEventListener('touchend', end);
             }});
         </script>
         """
@@ -171,7 +210,6 @@ with st.sidebar:
         st.session_state.m_sel_val = st.selectbox("Select Match", m_list, index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0)
     if st.button("🔄 Sync Data", use_container_width=True): st.cache_data.clear(); st.rerun()
 
-# Dynamic alliance slots detection
 slots = [("Capt","c"),("Pick 1","p1")]
 if '2e' in alliance_df.columns: slots.append(("Pick 2","p2"))
 
