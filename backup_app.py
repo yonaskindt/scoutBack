@@ -11,22 +11,22 @@ st.set_page_config(page_title="FRC Scouting Hub", layout="wide", initial_sidebar
 if 'alliances' not in st.session_state:
     st.session_state.alliances = {i: {"c": 0, "p1": 0, "p2": 0} for i in range(1, 9)}
 
-# Persistence for Match and Team selection
 if 'm_sel_val' not in st.session_state:
-    st.session_state.m_sel_val = 1 # Default to Match 1
+    st.session_state.m_sel_val = 1 
+
+if 'active_team_selection' not in st.session_state:
+    st.session_state.active_team_selection = None
 
 # --- CUSTOM CSS ---
 st.markdown("""
     <style>
     .main .block-container { max-width: 100%; padding: 0.5rem 1rem; }
     
-    /* Sidebar Styling */
     .sb-predict-box {
         padding: 12px; background: rgba(255, 255, 255, 0.05); border-radius: 10px;
         border: 1px solid rgba(255, 255, 255, 0.1); margin-top: 10px;
     }
     
-    /* Team Cards - Field Map (High Density) */
     .team-info-box-detailed {
         padding: 8px; border-radius: 8px; border-top: 4px solid;
         background-color: rgba(255, 255, 255, 0.08); font-size: 12px;
@@ -35,14 +35,15 @@ st.markdown("""
     .stat-row { display: flex; justify-content: space-between; margin-bottom: 1px; }
     .note-text { font-style: italic; font-size: 10px; color: #BDC3C7; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3px; padding-top: 2px; height: 32px; overflow: hidden; }
     
-    /* Field Side Text Labels */
     .field-side-label { text-align: center; display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 380px; }
     .side-big { font-size: 42px; font-weight: 900; color: #4F8BF9; line-height: 1; }
     .side-small { font-size: 11px; color: #BDC3C7; text-transform: uppercase; margin-top: -5px; }
 
-    /* Alliance Selection Layout */
-    .draft-card { background: rgba(255,255,255,0.05); padding: 8px; border-radius: 5px; margin-bottom: 4px; border-left: 3px solid #4F8BF9; }
     .alliance-container { background: rgba(255,255,255,0.03); padding: 10px; border-radius: 10px; border: 1px solid #444; margin-bottom: 10px; }
+    .staging-area { background: rgba(79, 139, 249, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #4F8BF9; margin-bottom: 20px; text-align: center; }
+    
+    /* Fast select button alignment */
+    .draft-row { display: flex; align-items: center; gap: 10px; width: 100%; }
     
     [data-testid="stHtml"] { padding: 0 !important; margin: 0 !important; }
     iframe { display: block; margin: 0 auto; border: none; overflow: hidden; }
@@ -90,7 +91,7 @@ except Exception as e:
 def get_team_stats(team_num):
     t_data = df[df['Team Number'] == team_num]
     if t_data.empty: 
-        return {"avg": 0, "count": 0, "auto_move": 0, "climb_pref": "N/A", "last_note": "No data", "driver": 0, "hub": 0, "died": 0, "def": 0, "warn": False}
+        return {"avg": 0, "count": 0, "auto_move": 0, "climb_pref": "N/A", "last_note": "No data", "driver": 0, "hub": 0, "died": 0, "def": 0, "warn": False, "pickup": "N/A"}
     
     avg = t_data['Total Score'].mean()
     hub = t_data['Amount in Hub'].mean()
@@ -104,11 +105,16 @@ def get_team_stats(team_num):
     
     died_tipped = t_data['Died_Num'].sum() + t_data['Tipped_Num'].sum()
     warn = True if (len(t_data) > 0 and (died_tipped / len(t_data)) > 0.2) else False
+
+    # Pickup Logic
+    pk_ground = t_data['PickUp Ground'].mean()
+    pk_hp = t_data['PickUP Human Player'].mean()
+    pk_pref = "Ground" if pk_ground > pk_hp else "HP" if pk_hp > 0 else "N/A"
     
     return {
         "avg": avg, "count": int(t_data['Match Number'].count()), "auto_move": move, 
         "climb_pref": climb, "last_note": note, "driver": driver, "hub": hub, 
-        "died": int(died_tipped), "def": defense_pct, "warn": warn
+        "died": int(died_tipped), "def": defense_pct, "warn": warn, "pickup": pk_pref
     }
 
 # --- 3. SIDEBAR NAVIGATION ---
@@ -119,14 +125,13 @@ with st.sidebar:
 
     if view in ["🗺️ Field Map", "📊 Overview", "🏆 Playoffs"]:
         m_list = sorted(schema_df['match_number'].unique().astype(int))
-        # Find index of previous selection to maintain state
         try:
             m_index = m_list.index(st.session_state.m_sel_val)
         except ValueError:
             m_index = 0
             
         selected_match = st.selectbox("Select Match", m_list, index=m_index, key="m_sel")
-        st.session_state.m_sel_val = selected_match # Update persistent value
+        st.session_state.m_sel_val = selected_match 
         
         row = schema_df[schema_df['match_number'] == selected_match].iloc[0]
         red_teams = [int(row['red1']), int(row['red2']), int(row['red3'])]
@@ -139,23 +144,8 @@ with st.sidebar:
             <div style="color:#FF4B4B; font-weight:bold; font-size:22px;">RED: {round(red_pred,1)}</div>
             <div style="color:#1F77B4; font-weight:bold; font-size:22px;">BLUE: {round(blue_pred,1)}</div>
         </div>""", unsafe_allow_html=True)
-    elif view == "🤖 Deep Dive":
-        t_list = sorted(set(df['Team Number'].unique()) | set(pit_df['team_number'].unique()))
-        t_list = [t for t in t_list if t > 0]
-        
-        # Persistence for Team selection
-        if 't_sel_val' not in st.session_state:
-            st.session_state.t_sel_val = t_list[0] if t_list else 0
-            
-        try:
-            t_index = t_list.index(st.session_state.t_sel_val)
-        except ValueError:
-            t_index = 0
 
-        selected_team = st.selectbox("Select Team", t_list, index=t_index, key="t_sel")
-        st.session_state.t_sel_val = selected_team
-
-    st.markdown("<div style='height: 30vh;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height: 35vh;'></div>", unsafe_allow_html=True)
     if st.button("🔄 Sync Data", use_container_width=True):
         st.cache_data.clear(); st.rerun()
 
@@ -175,12 +165,10 @@ if view == "🗺️ Field Map":
 
     r_cols = st.columns(3)
     for i, t in enumerate(red_teams):
-        with r_cols[i]:
-            detailed_card(t, "#FF4B4B")
+        with r_cols[i]: detailed_card(t, "#FF4B4B")
 
     f_l, f_m, f_r = st.columns([0.7, 4.6, 0.7])
-    with f_l: 
-        st.markdown(f"""<div class="field-side-label"><div class="side-big">{selected_match}</div><div class="side-small">MATCH</div></div>""", unsafe_allow_html=True)
+    with f_l: st.markdown(f"""<div class="field-side-label"><div class="side-big">{selected_match}</div><div class="side-small">MATCH</div></div>""", unsafe_allow_html=True)
     with f_m:
         if os.path.exists("field.png"):
             with open("field.png", "rb") as f: img_b64 = base64.b64encode(f.read()).decode()
@@ -210,118 +198,116 @@ if view == "🗺️ Field Map":
             </script>
             """
             st.components.v1.html(html_content, height=415)
-    with f_r: 
-        st.markdown(f"""<div class="field-side-label"><div style="color:#FF4B4B; font-weight:800; font-size:10px;">RED</div><div style="font-size:24px; font-weight:900;">{round(red_pred,1)}</div><div style="height:25px;"></div><div style="color:#1F77B4; font-weight:800; font-size:10px;">BLUE</div><div style="font-size:24px; font-weight:900;">{round(blue_pred,1)}</div></div>""", unsafe_allow_html=True)
+    with f_r: st.markdown(f"""<div class="field-side-label"><div style="color:#FF4B4B; font-weight:800; font-size:10px;">RED</div><div style="font-size:24px; font-weight:900;">{round(red_pred,1)}</div><div style="height:25px;"></div><div style="color:#1F77B4; font-weight:800; font-size:10px;">BLUE</div><div style="font-size:24px; font-weight:900;">{round(blue_pred,1)}</div></div>""", unsafe_allow_html=True)
     
     b_cols = st.columns(3)
     for i, t in enumerate(blue_teams):
-        with b_cols[i]:
-            detailed_card(t, "#1F77B4")
+        with b_cols[i]: detailed_card(t, "#1F77B4")
 
-# --- 5. VIEW: ALLIANCE SELECTION ---
+# --- 5. VIEW: ALLIANCE SELECTION (QUICK SELECT) ---
 elif view == "🤝 Alliance Selection":
     st.title("🤝 Alliance Selection Board")
     
+    if st.session_state.active_team_selection:
+        st.markdown(f"""<div class="staging-area"><h3>Team {st.session_state.active_team_selection} READY</h3><p>Assign to a playoff slot on the right.</p></div>""", unsafe_allow_html=True)
+        if st.button("Clear Active Selection"):
+            st.session_state.active_team_selection = None; st.rerun()
+
     drafted = []
-    for a in st.session_state.alliances.values():
-        drafted.extend([a['c'], a['p1'], a['p2']])
+    for a in st.session_state.alliances.values(): drafted.extend([a['c'], a['p1'], a['p2']])
     drafted = [t for t in drafted if t > 0]
 
-    col_pick, col_alliances = st.columns([1, 2])
-    
+    col_pick, col_alliances = st.columns([1.2, 2.5])
     with col_pick:
-        st.subheader("📋 Draftable Teams")
-        all_teams = sorted(set(df['Team Number'].unique()))
+        st.subheader("📋 Draft Board")
         team_data_list = []
-        for t in all_teams:
-            if t > 0:
-                s = get_team_stats(t)
-                team_data_list.append({"team": t, **s})
-        
+        for t in sorted(set(df['Team Number'].unique())):
+            if t > 0: team_data_list.append({"team": t, **get_team_stats(t)})
         draft_sorted = pd.DataFrame(team_data_list).sort_values('avg', ascending=False)
 
-        for _, team_row in draft_sorted.iterrows():
-            t_num = int(team_row['team'])
+        for _, tr in draft_sorted.iterrows():
+            t_num = int(tr['team'])
             is_taken = t_num in drafted
-            warn_icon = "⚠️ " if team_row['warn'] else ""
-            summary = f"{warn_icon}{t_num} — Avg: {round(team_row['avg'],1)} | Def: {round(team_row['def'])}%"
+            is_active = st.session_state.active_team_selection == t_num
             
-            with st.expander(f"{'~~' if is_taken else ''}{summary}{'~~ (DRAFTED)' if is_taken else ''}"):
-                if is_taken:
-                    st.write("Team already assigned.")
-                else:
-                    st.write(f"**Auto Move:** {round(team_row['auto_move'])}% | **Climb:** {team_row['climb_pref']}")
-                    st.write(f"**Died/Tipped:** {team_row['died']} matches")
-                    target_a = st.selectbox("Alliance", range(1, 9), key=f"target_{t_num}")
-                    slot = st.selectbox("Slot", ["Captain", "Pick 1", "Pick 2"], key=f"slot_{t_num}")
-                    if st.button(f"Assign {t_num}", key=f"btn_{t_num}"):
-                        slot_map = {"Captain": "c", "Pick 1": "p1", "Pick 2": "p2"}
-                        st.session_state.alliances[target_a][slot_map[slot]] = t_num
-                        st.rerun()
+            # Use columns for "Select without expanding"
+            sel_col, exp_col = st.columns([0.3, 0.7])
+            with sel_col:
+                if not is_taken:
+                    if st.button("➕", key=f"fast_sel_{t_num}", help="Select Team"):
+                        st.session_state.active_team_selection = t_num; st.rerun()
+                else: st.write("✅")
+            
+            with exp_col:
+                summary = f"{t_num} — Avg: {round(tr['avg'],1)}"
+                with st.expander(f"{'➡️ ' if is_active else ''}{'~~' if is_taken else ''}{summary}"):
+                    st.write(f"**Driver Skill:** {round(tr['driver'],1)}/5")
+                    st.write(f"**Pickup:** {tr['pickup']} | **Def:** {round(tr['def'])}%")
+                    st.write(f"**Reliability:** {tr['died']} died/tipped matches")
+                    st.info(f"**Last Note:** {tr['last_note']}")
 
     with col_alliances:
-        st.subheader("🏆 Playoff Grid")
+        st.subheader("🏆 Playoffs")
         grid = st.columns(2)
         for i in range(1, 9):
             with grid[(i-1) % 2]:
                 st.markdown(f"""<div class="alliance-container"><b>Alliance {i}</b>""", unsafe_allow_html=True)
-                for label, key in [("Captain", "c"), ("Pick 1", "p1"), ("Pick 2", "p2")]:
-                    current_t = st.session_state.alliances[i][key]
-                    if current_t > 0:
-                        if st.button(f"❌ {label}: {current_t}", key=f"remove_{i}_{key}"):
-                            st.session_state.alliances[i][key] = 0
-                            st.rerun()
-                    else:
-                        st.write(f"*{label}: Empty*")
-                sum_avg = sum(get_team_stats(st.session_state.alliances[i][k])['avg'] for k in ['c','p1','p2'])
-                st.markdown(f"<div style='text-align:right; color:#4F8BF9;'>Σ Avg: {round(sum_avg,1)}</div></div>", unsafe_allow_html=True)
+                for label, key in [("Capt", "c"), ("Pick 1", "p1"), ("Pick 2", "p2")]:
+                    curr = st.session_state.alliances[i][key]
+                    if st.button(f"{label}: {curr if curr > 0 else 'empty'}", key=f"btn_{i}_{key}", use_container_width=True):
+                        if st.session_state.active_team_selection:
+                            st.session_state.alliances[i][key] = st.session_state.active_team_selection
+                            st.session_state.active_team_selection = None; st.rerun()
+                        elif curr > 0:
+                            st.session_state.alliances[i][key] = 0; st.rerun()
+                total = sum(get_team_stats(st.session_state.alliances[i][k])['avg'] for k in ['c','p1','p2'])
+                st.markdown(f"<div style='text-align:right; color:#4F8BF9;'>Σ {round(total,1)}</div></div>", unsafe_allow_html=True)
 
-# --- 6. VIEW: DEEP DIVE ---
+# --- 6. VIEW: DEEP DIVE (HEADER SELECTOR) ---
 elif view == "🤖 Deep Dive":
-    sel_t = selected_team
-    t_data = df[df['Team Number'] == sel_t]
-    stats = get_team_stats(sel_t)
-    p_data = pit_df[pit_df['team_number'] == sel_t]
-    name = p_data.iloc[0]['team name'] if not p_data.empty else "Unknown Team"
-    st.markdown(f"<div style='font-size: 48px; color: #4F8BF9; font-weight: 800;'>{sel_t}</div><div style='font-size: 22px; color: #BDC3C7;'>{name}</div>", unsafe_allow_html=True)
+    t_list = sorted(set(df['Team Number'].unique()) | set(pit_df['team_number'].unique()))
+    t_list = [t for t in t_list if t > 0]
     
+    if 't_sel_val' not in st.session_state: st.session_state.t_sel_val = t_list[0]
+    try: t_index = t_list.index(st.session_state.t_sel_val)
+    except ValueError: t_index = 0
+
+    # Team Selector on Main Page
+    header_l, header_r = st.columns([1, 1])
+    with header_l:
+        selected_team = st.selectbox("🔍 Deep Dive Selection", t_list, index=t_index, key="main_t_sel")
+        st.session_state.t_sel_val = selected_team
+
+    stats = get_team_stats(selected_team); p_data = pit_df[pit_df['team_number'] == selected_team]
+    name = p_data.iloc[0]['team name'] if not p_data.empty else "Unknown Team"
+    
+    st.markdown(f"<div style='font-size: 48px; color: #4F8BF9; font-weight: 800;'>{selected_team}</div><div style='font-size: 22px; color: #BDC3C7;'>{name}</div>", unsafe_allow_html=True)
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Avg Score", round(stats['avg'], 1)); m2.metric("Auto%", f"{round(stats['auto_move'])}%"); m3.metric("Avg Driver", f"{round(stats['driver'], 1)}/5"); m4.metric("Climb Pref", stats['climb_pref']); m5.metric("Matches", stats['count'])
     
     st.divider(); cl_l, cl_r = st.columns([2, 1.2])
     with cl_l:
-        st.subheader("Performance Trend")
-        team_matches = schema_df[(schema_df[['red1','red2','red3','blue1','blue2','blue3']] == sel_t).any(axis=1)][['match_number']]
-        merged = pd.merge(team_matches, df[df['Team Number'] == sel_t], left_on='match_number', right_on='Match Number', how='left')
+        st.subheader("Trend")
+        merged = pd.merge(schema_df[(schema_df[['red1','red2','red3','blue1','blue2','blue3']] == selected_team).any(axis=1)][['match_number']], df[df['Team Number'] == selected_team], left_on='match_number', right_on='Match Number', how='left')
         merged['X_Label'] = merged['match_number'].apply(lambda x: f"M{int(x)}")
-        score_df = merged.dropna(subset=['Total Score'])
-        if not score_df.empty: st.plotly_chart(px.line(score_df, x="X_Label", y="Total Score", markers=True, template="plotly_dark", height=280), use_container_width=True)
-        
-        st.subheader("Pickup Habits")
-        pick_stats = df[df['Team Number'] == sel_t][['PickUp Ground', 'PickUP Human Player', 'PickUp Depot']].mean().fillna(0) * 100
+        if not merged.dropna(subset=['Total Score']).empty: st.plotly_chart(px.line(merged.dropna(subset=['Total Score']), x="X_Label", y="Total Score", markers=True, template="plotly_dark", height=280), use_container_width=True)
+        pick_stats = df[df['Team Number'] == selected_team][['PickUp Ground', 'PickUP Human Player', 'PickUp Depot']].mean().fillna(0) * 100
         st.plotly_chart(px.bar(x=pick_stats.index.tolist(), y=pick_stats.values.tolist(), height=220, template="plotly_dark"), use_container_width=True)
     with cl_r:
-        if not p_data.empty: st.subheader("🛠️ Pit Specs"); st.dataframe(p_data.T, use_container_width=True)
-        st.subheader("⚠️ Reliability")
-        if stats['died'] > 0: st.error(f"Died/Tipped in {stats['died']} matches"); 
-    st.divider(); st.subheader("💬 Match Logs")
-    st.table(df[df['Team Number'] == sel_t].dropna(subset=['Comments'])[['Match Number', 'Comments', 'driver skill']].sort_values('Match Number', ascending=False) if not df[df['Team Number'] == sel_t].dropna(subset=['Comments']).empty else pd.DataFrame(columns=['Match Number', 'Comments', 'driver skill']))
+        if not p_data.empty: st.subheader("🛠️ Pit"); st.dataframe(p_data.T, use_container_width=True)
+        if stats['died'] > 0: st.error(f"Reliability: {stats['died']} incidents")
+    st.divider(); st.subheader("Match Logs")
+    notes_df = df[df['Team Number'] == selected_team].dropna(subset=['Comments'])[['Match Number', 'Comments', 'driver skill']].sort_values('Match Number', ascending=False)
+    if not notes_df.empty: st.table(notes_df)
 
-# --- 7. PLAYOFFS / OVERVIEW ---
 elif view == "📊 Overview":
-    st.title(f"Match {selected_match} Overview")
+    st.title(f"Match {st.session_state.m_sel_val} Overview")
     o1, o2 = st.columns(2)
-    with o1: 
-        st.subheader("🔴 Red Alliance")
-        for t in red_teams:
-            s = get_team_stats(t)
-            with st.container(border=True): st.write(f"**Team {t}** | Avg: {round(s['avg'],1)} | {s['climb_pref']}")
-    with o2: 
-        st.subheader("🔵 Blue Alliance")
-        for t in blue_teams:
-            s = get_team_stats(t)
-            with st.container(border=True): st.write(f"**Team {t}** | Avg: {round(s['avg'],1)} | {s['climb_pref']}")
+    with o1:
+        st.subheader("🔴 Red"); [st.write(f"**{t}** | Avg: {round(get_team_stats(t)['avg'],1)}") for t in red_teams if t > 0]
+    with o2:
+        st.subheader("🔵 Blue"); [st.write(f"**{t}** | Avg: {round(get_team_stats(t)['avg'],1)}") for t in blue_teams if t > 0]
 
 elif view == "🏆 Playoffs":
-    st.title("🏆 Playoff Dashboard")
-    st.info("Playoff mode activated.")
+    st.title("🏆 Playoffs")
+    st.info("Configured via Draft Board.")
