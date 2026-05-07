@@ -30,10 +30,10 @@ if 'playoff_blue_out' not in st.session_state: st.session_state.playoff_blue_out
 st.markdown("""
     <style>
     .main .block-container { max-width: 100%; padding: 0.5rem 1rem; }
-    .team-info-box-detailed { padding: 6px; border-radius: 8px; border-top: 4px solid; background-color: rgba(255, 255, 255, 0.08); font-size: 11px; box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 4px; }
+    .team-info-box-detailed { padding: 8px; border-radius: 8px; border-top: 4px solid; background-color: rgba(255, 255, 255, 0.08); font-size: 12px; box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 5px; }
     .stat-row { display: flex; justify-content: space-between; margin-bottom: 1px; }
     .note-text { font-style: italic; font-size: 10px; color: #BDC3C7; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3px; padding-top: 2px; height: 32px; overflow: hidden; }
-    .field-side-label { text-align: center; display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 120px; }
+    .field-side-label { text-align: center; display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 200px; }
     .side-big { font-size: 42px; font-weight: 900; color: #4F8BF9; line-height: 1; }
     .side-small { font-size: 11px; color: #BDC3C7; text-transform: uppercase; margin-top: -5px; }
     .staging-area { background: rgba(79, 139, 249, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #4F8BF9; margin-bottom: 20px; text-align: center; }
@@ -82,7 +82,7 @@ if df is None: st.stop()
 def get_team_stats(team_num):
     if team_num == 0: return {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "died": 0, "warn": False}
     t_data = df[df['Team Number'] == team_num]
-    stat_dict = {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "died": 0, "warn": False}
+    stat_dict = {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "warn": False}
     if not t_data.empty:
         stat_dict.update({"avg": t_data['Total Score'].mean(), "count": len(t_data)})
         if 'Climbing' in t_data: stat_dict["climb_pref"] = t_data['Climbing'].dropna().mode().iloc[0] if not t_data['Climbing'].dropna().empty else "N/A"
@@ -105,10 +105,10 @@ def detailed_card(team_num, color_hex):
 
 def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_pred, width_mode="FRC"):
     img_file = "field.png" if width_mode == "FRC" else "ftcfield.png"
-    # Aspect Ratio Fix: FRC=Panoramic (25% padding), FTC=Square (100%)
-    aspect = "25%" if width_mode == "FRC" else "100%"
+    # Adjusted aspect to 28% for FRC to make it "higher" while containment remains
+    aspect = "28%" if width_mode == "FRC" else "100%"
+    max_h = "400px" if width_mode == "FRC" else "550px"
     max_w = "100%" if width_mode == "FRC" else "550px"
-    max_h = "380px" if width_mode == "FRC" else "550px"
     
     img_b64 = ""
     if os.path.exists(img_file):
@@ -118,7 +118,7 @@ def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_
     blue_bots = "".join([f'<div class="bot blue" style="right: 15%; top: {25+(i*35)}%;" id="b{i}">{blue_teams[i]}</div>' for i in range(len(blue_teams))])
 
     html_content = f"""
-    <div id="controls" style="display:flex; gap:10px; margin:0 auto; max-width:{max_w}; padding:0 0 4px 0;">
+    <div id="controls" style="display:flex; gap:10px; margin:0 auto; max-width:{max_w}; padding:0 0 5px 0;">
         <button onclick="setMode('move')" style="flex:1; padding:8px; cursor:pointer; background:#4F8BF9; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Move</button>
         <button onclick="setMode('draw')" style="flex:1; padding:8px; cursor:pointer; background:#2ECC71; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Draw</button>
         <button onclick="clearCanvas()" style="flex:0.5; padding:8px; cursor:pointer; background:#E74C3C; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Clear</button>
@@ -170,9 +170,10 @@ def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_
         }});
     </script>
     """
-    st.components.v1.html(html_content, height=620 if width_mode == "FTC" else 460)
+    # Optimized heights for tablets to prevent large gaps below the component
+    st.components.v1.html(html_content, height=590 if width_mode == "FTC" else 360)
 
-# --- 3. VIEWS ---
+# --- 3. VIEW LOGIC ---
 with st.sidebar:
     st.divider()
     if view in ["🗺️ Field Map", "📊 Overview"]:
@@ -193,7 +194,7 @@ if view == "🗺️ Field Map":
             for t in rt: detailed_card(t, "#FF4B4B")
         with c2:
             render_field_interactive(rt, bt, st.session_state.m_sel_val, 0, 0, width_mode="FTC")
-            st.markdown(f"<div style='text-align:center; font-weight:bold; color:#BDC3C7;'>MATCH {st.session_state.m_sel_val}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-weight:bold; color:#BDC3C7; margin-top:-10px;'>MATCH {st.session_state.m_sel_val}</div>", unsafe_allow_html=True)
         with c3:
             st.markdown("<div style='text-align:center; color:#1F77B4; font-weight:bold; margin-bottom:5px;'>BLUE</div>", unsafe_allow_html=True)
             for t in bt: detailed_card(t, "#1F77B4")
@@ -218,26 +219,20 @@ elif view == "🤖 per team":
         p_row = pit_df[pit_df['team_number'] == sel_t]
         for col in ['team_name', 'Team Name', 'Name']:
             if col in p_row.columns and not p_row.empty:
-                t_name = f"- {p_row[col].iloc[0]}"
-                break
+                t_name = f"- {p_row[col].iloc[0]}"; break
     st.title(f"Team {sel_t} {t_name}")
     m = st.columns(4); m[0].metric("Avg Score", round(stats['avg'],1)); m[1].metric("Climb", stats['climb_pref']); m[2].metric("Skill", round(stats['driver'],1)); m[3].metric("Samples", stats['count'])
-    
     st.divider(); l, r = st.columns([2, 1.2])
     with l:
-        st.subheader("Score Trend")
         merged = df[df['Team Number'] == sel_t].copy()
         merged['X'] = merged['Match Number'].apply(lambda x: f"M{int(x)}")
         st.plotly_chart(px.line(merged.sort_values('Match Number'), x="X", y="Total Score", markers=True, template="plotly_dark", height=300), use_container_width=True)
-        st.subheader("Match Logs")
         st.table(df[df['Team Number'] == sel_t].dropna(subset=['Comments'])[['Match Number', 'Comments']].sort_values('Match Number', ascending=False))
     with r:
         if stats['died'] > 0: st.error(f"⚠️ Team Died/Tipped in {stats['died']} matches!")
         if st.session_state.comp_mode == "FRC" and not pit_df.empty:
             p_row = pit_df[pit_df['team_number'] == sel_t]
-            if not p_row.empty:
-                st.subheader("🛠️ Pit Specifications")
-                st.dataframe(p_row.T, use_container_width=True)
+            if not p_row.empty: st.subheader("🛠️ Pit Specifications"); st.dataframe(p_row.T, use_container_width=True)
 
 elif view == "🤝 Alliance Selection":
     st.title("🤝 Draft Board")
@@ -284,8 +279,8 @@ elif view == "🏆 Playoffs":
     st.title(f"🏆 {st.session_state.comp_mode} Playoffs")
     a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
     p_slots = [c for c in ['C', '1e', '2e'] if c in alliance_df.columns]
-    c1, c2 = st.columns(2)
-    with c1:
+    c_sel1, c_sel2 = st.columns(2)
+    with c_sel1:
         r_choice = st.selectbox("🔴 Red Alliance", a_names, index=0)
         r_row = alliance_df.iloc[a_names.index(r_choice)]
         r_roster = [int(r_row[k]) for k in p_slots if pd.notna(r_row[k])]
@@ -295,7 +290,7 @@ elif view == "🏆 Playoffs":
                 out_r = st.selectbox("Red to sit out", r_roster, index=r_roster.index(st.session_state.playoff_red_out) if st.session_state.playoff_red_out in r_roster else 0)
                 st.session_state.playoff_red_out = out_r
                 r_roster = [int(r_row['3e']) if x == out_r else x for x in r_roster]
-    with c2:
+    with c_sel2:
         b_choice = st.selectbox("🔵 Blue Alliance", a_names, index=min(1, len(a_names)-1))
         b_row = alliance_df.iloc[a_names.index(b_choice)]
         b_roster = [int(b_row[k]) for k in p_slots if pd.notna(b_row[k])]
@@ -305,10 +300,20 @@ elif view == "🏆 Playoffs":
                 out_b = st.selectbox("Blue to sit out", b_roster, index=b_roster.index(st.session_state.playoff_blue_out) if st.session_state.playoff_blue_out in b_roster else 0)
                 st.session_state.playoff_blue_out = out_b
                 b_roster = [int(b_row['3e']) if x == out_b else x for x in b_roster]
-    rc = st.columns(len(r_roster))
-    for i, t in enumerate(r_roster):
-        with rc[i]: detailed_card(t, "#FF4B4B")
-    render_field_interactive(r_roster, b_roster, "PLAYOFF", sum(get_team_stats(t)['avg'] for t in r_roster), sum(get_team_stats(t)['avg'] for t in b_roster), width_mode=st.session_state.comp_mode)
-    bc = st.columns(len(b_roster))
-    for i, t in enumerate(b_roster):
-        with bc[i]: detailed_card(t, "#1F77B4")
+
+    r_score, b_score = sum(get_team_stats(t)['avg'] for t in r_roster), sum(get_team_stats(t)['avg'] for t in b_roster)
+    if st.session_state.comp_mode == "FTC":
+        c1, c2, c3 = st.columns([1.2, 3.5, 1.2])
+        with c1:
+            for t in r_roster: detailed_card(t, "#FF4B4B")
+        with c2: render_field_interactive(r_roster, b_roster, "PLAYOFF", r_score, b_score, width_mode="FTC")
+        with c3:
+            for t in b_roster: detailed_card(t, "#1F77B4")
+    else:
+        rc = st.columns(len(r_roster))
+        for i, t in enumerate(r_roster):
+            with rc[i]: detailed_card(t, "#FF4B4B")
+        render_field_interactive(r_roster, b_roster, "PLAYOFF", r_score, b_score, width_mode="FRC")
+        bc = st.columns(len(b_roster))
+        for i, t in enumerate(b_roster):
+            with bc[i]: detailed_card(t, "#1F77B4")
