@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import gspread
 from google.oauth2.service_account import Credentials
+from streamlit_drawable_canvas import st_canvas
 
 # --- Page Configuration ---
 st.set_page_config(page_title="FTC Scouting Dashboard", layout="wide")
@@ -85,7 +85,6 @@ def load_all_ftc_data():
 
     # 1. Process Main Scouting Data
     if data is not None and not data.empty:
-        # Detect Team & Match columns
         t_col = next((c for c in ['team_number', 'team number', 'team', 'team_num'] if c in data.columns), None)
         m_col = next((c for c in ['match_number', 'match number', 'match', 'match_num'] if c in data.columns), None)
         a_col = next((c for c in ['alliance', 'color'] if c in data.columns), None)
@@ -99,7 +98,6 @@ def load_all_ftc_data():
         if a_col:
             data.rename(columns={a_col: 'alliance'}, inplace=True)
 
-        # Convert numeric scoring columns safely
         for col in ['+1', '+3', '+5', 'amount in hub', 'auto points', 'teleop points']:
             if col in data.columns:
                 data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
@@ -110,7 +108,6 @@ def load_all_ftc_data():
         elif 'total score' not in data.columns:
             data['total score'] = 0
 
-        # Clean Boolean Flags
         def clean_bool(val):
             return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
 
@@ -119,7 +116,7 @@ def load_all_ftc_data():
                 clean_key = col.replace('?', '').split('/')[0].strip() + '_num'
                 data[clean_key] = data[col].apply(clean_bool)
 
-    # 2. Process Matches Schema (Matches Tab: B2='match_number', C2='r1', D2='r2', E2='b1', F2='b2')
+    # 2. Process Matches Schema
     if schema is not None and not schema.empty:
         m_schema_col = next((c for c in ['match_number', 'match number', 'match'] if c in schema.columns), schema.columns[0])
         schema.rename(columns={m_schema_col: 'match_number'}, inplace=True)
@@ -144,9 +141,9 @@ tabs = st.tabs(["⚔️ Match Strategy & Field View", "📊 Per-Team Analytics",
 # TAB 1: MATCH STRATEGY & FIELD VIEW
 # ==============================================================================
 with tabs[0]:
-    st.title("Match Strategy & Field Overview")
+    st.title("Match Strategy & Field Planning")
 
-    # Fetch available match numbers safely from schema or data
+    # Fetch available match numbers
     if schema_df is not None and not schema_df.empty and 'match_number' in schema_df.columns:
         available_matches = sorted([m for m in schema_df['match_number'].unique() if m > 0])
     elif data_df is not None and not data_df.empty and 'match_number' in data_df.columns:
@@ -168,7 +165,6 @@ with tabs[0]:
         if not matched.empty:
             m_row = matched.iloc[0]
 
-    # Team extraction helper for r1, r2, b1, b2 headers
     def safe_get_team(row, keys):
         if row is None:
             return 0
@@ -186,70 +182,120 @@ with tabs[0]:
     b1 = safe_get_team(m_row, ['b1', 'blue1', 'blue 1'])
     b2 = safe_get_team(m_row, ['b2', 'blue2', 'blue 2'])
 
-    # --- FIELD LAYOUT VISUALIZER ---
-    st.subheader(f"Field Layout - Match {selected_match}")
-    f_col1, f_col2 = st.columns(2)
+    # --- INTERACTIVE DRAWABLE FIELD CANVAS ---
+    st.subheader(f"Field Strategy Canvas — Match {selected_match}")
 
-    with f_col1:
-        st.markdown(
-            f"""
-            <div style="background-color: #ff4b4b22; border: 2px solid #ff4b4b; padding: 15px; border-radius: 10px; text-align: center;">
-                <h3 style="color: #ff4b4b; margin:0;">🔴 RED ALLIANCE</h3>
-                <h2 style="margin:10px 0;">Team {r1 if r1 else 'N/A'} &nbsp;|&nbsp; Team {r2 if r2 else 'N/A'}</h2>
-            </div>
-            """, unsafe_allow_html=True
-        )
+    c_tool, c_color, c_width, c_clear = st.columns([2, 2, 2, 1])
 
-    with f_col2:
-        st.markdown(
-            f"""
-            <div style="background-color: #1c83e122; border: 2px solid #1c83e1; padding: 15px; border-radius: 10px; text-align: center;">
-                <h3 style="color: #1c83e1; margin:0;">🔵 BLUE ALLIANCE</h3>
-                <h2 style="margin:10px 0;">Team {b1 if b1 else 'N/A'} &nbsp;|&nbsp; Team {b2 if b2 else 'N/A'}</h2>
-            </div>
-            """, unsafe_allow_html=True
+    with c_tool:
+        drawing_mode = st.selectbox(
+            "Drawing Tool:",
+            ("freedraw", "line", "rect", "circle", "transform"),
+            help="Select 'transform' to select and move drawn elements or robot icons."
         )
+    with c_color:
+        stroke_color = st.color_picker("Stroke Color:", "#ff0000")
+    with c_width:
+        stroke_width = st.slider("Stroke Width:", 1, 15, 3)
+
+    # Optional background image field URL (Replaced with standard FTC field layout image)
+    bg_image_url = "https://raw.githubusercontent.com/FIRST-Tech-Challenge/ftc_app/master/doc/images/field_outer.png"
+
+    # Interactive Canvas Component
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # Fill color for shapes
+        stroke_width=stroke_width,
+        stroke_color=stroke_color,
+        background_image_url=bg_image_url,
+        update_streamlit=True,
+        height=500,
+        width=700,
+        drawing_mode=drawing_mode,
+        key=f"canvas_match_{selected_match}",
+    )
 
     st.write("---")
 
-    # --- SCOUTING METRICS FOR MATCH TEAMS ---
-    st.subheader("Match Teams Performance Comparison")
-    match_teams = [t for t in [r1, r2, b1, b2] if t > 0]
+    # --- 4 TEAM PERFORMANCE CARDS BELOW FIELD ---
+    st.subheader("Match Alliance Team Breakdown")
 
-    if match_teams and 'team_number' in data_df.columns:
-        match_data = data_df[data_df['team_number'].isin(match_teams)]
+    def get_team_stats(team_num):
+        if team_num <= 0 or 'team_number' not in data_df.columns:
+            return {"avg": "N/A", "max": "N/A", "died": "N/A", "move": "N/A"}
+        
+        t_data = data_df[data_df['team_number'] == team_num]
+        if t_data.empty:
+            return {"avg": "No Data", "max": "No Data", "died": "No Data", "move": "No Data"}
 
-        if not match_data.empty:
-            agg_dict = {'total score': 'mean'}
-            for c in ['moved_num', 'died_num', 'tipped_num']:
-                if c in match_data.columns:
-                    agg_dict[c] = 'mean'
+        avg_score = f"{t_data['total score'].mean():.1f}"
+        max_score = f"{int(t_data['total score'].max())}"
+        
+        died_rate = f"{t_data['died_num'].mean()*100:.0f}%" if 'died_num' in t_data.columns else "N/A"
+        move_rate = f"{t_data['moved_num'].mean()*100:.0f}%" if 'moved_num' in t_data.columns else "N/A"
 
-            metrics_df = match_data.groupby('team_number').agg(agg_dict).reset_index()
-            
-            rename_map = {'team_number': 'Team', 'total score': 'Avg Points'}
-            if 'moved_num' in metrics_df.columns: rename_map['moved_num'] = 'Auto Move Rate'
-            if 'died_num' in metrics_df.columns: rename_map['died_num'] = 'Died Rate'
-            if 'tipped_num' in metrics_df.columns: rename_map['tipped_num'] = 'Tip Rate'
+        return {"avg": avg_score, "max": max_score, "died": died_rate, "move": move_rate}
 
-            metrics_df.rename(columns=rename_map, inplace=True)
+    card_r1, card_r2, card_b1, card_b2 = st.columns(4)
 
-            st.dataframe(metrics_df.style.highlight_max(axis=0, subset=['Avg Points'], color='#2e7bcf'), use_container_width=True)
+    # Red 1
+    s_r1 = get_team_stats(r1)
+    with card_r1:
+        st.markdown(f"""
+        <div style="background-color: #ff4b4b15; border: 2px solid #ff4b4b; border-radius: 10px; padding: 15px;">
+            <h4 style="color: #ff4b4b; margin:0;">🔴 RED 1</h4>
+            <h2 style="margin:5px 0;">Team {r1 if r1 else 'N/A'}</h2>
+            <hr style="margin:8px 0;">
+            <p><b>Avg Score:</b> {s_r1['avg']}</p>
+            <p><b>Max Score:</b> {s_r1['max']}</p>
+            <p><b>Auto Move:</b> {s_r1['move']}</p>
+            <p><b>Died Rate:</b> {s_r1['died']}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-            # Box plot chart for match teams
-            fig_match = px.box(
-                match_data,
-                x='team_number',
-                y='total score',
-                color='team_number',
-                title=f"Score Distribution for Match {selected_match} Teams",
-                labels={'team_number': 'Team Number', 'total score': 'Total Score'}
-            )
-            st.plotly_chart(fig_match, use_container_width=True)
-        else:
-            st.info("No detailed scouting entries found for these 4 teams in the Data tab yet.")
-    else:
-        st.info("No alliance team mapping available for this match.")
+    # Red 2
+    s_r2 = get_team_stats(r2)
+    with card_r2:
+        st.markdown(f"""
+        <div style="background-color: #ff4b4b15; border: 2px solid #ff4b4b; border-radius: 10px; padding: 15px;">
+            <h4 style="color: #ff4b4b; margin:0;">🔴 RED 2</h4>
+            <h2 style="margin:5px 0;">Team {r2 if r2 else 'N/A'}</h2>
+            <hr style="margin:8px 0;">
+            <p><b>Avg Score:</b> {s_r2['avg']}</p>
+            <p><b>Max Score:</b> {s_r2['max']}</p>
+            <p><b>Auto Move:</b> {s_r2['move']}</p>
+            <p><b>Died Rate:</b> {s_r2['died']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Blue 1
+    s_b1 = get_team_stats(b1)
+    with card_b1:
+        st.markdown(f"""
+        <div style="background-color: #1c83e115; border: 2px solid #1c83e1; border-radius: 10px; padding: 15px;">
+            <h4 style="color: #1c83e1; margin:0;">🔵 BLUE 1</h4>
+            <h2 style="margin:5px 0;">Team {b1 if b1 else 'N/A'}</h2>
+            <hr style="margin:8px 0;">
+            <p><b>Avg Score:</b> {s_b1['avg']}</p>
+            <p><b>Max Score:</b> {s_b1['max']}</p>
+            <p><b>Auto Move:</b> {s_b1['move']}</p>
+            <p><b>Died Rate:</b> {s_b1['died']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Blue 2
+    s_b2 = get_team_stats(b2)
+    with card_b2:
+        st.markdown(f"""
+        <div style="background-color: #1c83e115; border: 2px solid #1c83e1; border-radius: 10px; padding: 15px;">
+            <h4 style="color: #1c83e1; margin:0;">🔵 BLUE 2</h4>
+            <h2 style="margin:5px 0;">Team {b2 if b2 else 'N/A'}</h2>
+            <hr style="margin:8px 0;">
+            <p><b>Avg Score:</b> {s_b2['avg']}</p>
+            <p><b>Max Score:</b> {s_b2['max']}</p>
+            <p><b>Auto Move:</b> {s_b2['move']}</p>
+            <p><b>Died Rate:</b> {s_b2['died']}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # ==============================================================================
@@ -274,18 +320,6 @@ with tabs[1]:
             with kpi4:
                 reliability = (1 - t_data['died_num'].mean()) * 100 if 'died_num' in t_data.columns and not t_data.empty else 100
                 st.metric("Reliability", f"{reliability:.0f}%")
-
-            if 'match_number' in t_data.columns and not t_data.empty:
-                fig_trend = px.line(
-                    t_data.sort_values('match_number'),
-                    x='match_number',
-                    y='total score',
-                    markers=True,
-                    title=f"Team {selected_team} Score Progression Across Matches"
-                )
-                st.plotly_chart(fig_trend, use_container_width=True)
-        else:
-            st.info("No team numbers found in scouting data.")
 
 
 # ==============================================================================
