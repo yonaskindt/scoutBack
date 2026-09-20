@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Set Streamlit Page Configuration
 st.set_page_config(
@@ -11,35 +13,74 @@ st.set_page_config(
     layout="wide"
 )
 
-# -----------------------------------------------------------------------------
-# 1. HARDCODED GOOGLE SHEET CONFIGURATION & DATA LOADING
-# -----------------------------------------------------------------------------
-# Replace this URL with your actual public Google Sheet link
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY/edit?gid=0#gid=0"
+# Set your target Google Sheet ID (from the sheet URL: /spreadsheets/d/YOUR_SHEET_ID/edit)
+SPREADSHEET_ID = "1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY"
+WORKSHEET_NAME = "Data"  # Adjust if your tab name is different
 
+# -----------------------------------------------------------------------------
+# 1. GOOGLE SERVICE ACCOUNT DATA LOADING
+# -----------------------------------------------------------------------------
 @st.cache_data(ttl=60)
-def load_data(sheet_url: str) -> pd.DataFrame:
+def load_sheet_data_from_service_account() -> pd.DataFrame:
     """
-    Loads scouting data from a public Google Sheet CSV export.
-    Assumes header starts at Row 2 (skiprows=1) and data starts at Column B.
+    Authenticates using Google Service Account credentials stored in Streamlit secrets
+    and loads data starting from Row 2 and Column B.
     """
     try:
-        # Convert standard Google Sheet URL to direct CSV export URL
-        if "/edit" in sheet_url:
-            csv_url = sheet_url.split("/edit")[0] + "/gviz/tq?tqx=out:csv"
-        else:
-            csv_url = sheet_url
+        # Define API scopes
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
 
-        # Read CSV starting from Row 2 and Column B onward
-        df = pd.read_csv(csv_url, skiprows=1)
-        df = df.iloc[:, 1:]  # Drop Column A (starts from Column B)
-        return df.dropna(how="all")
+        # Load credentials from Streamlit Secrets
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=scopes,
+        )
+
+        # Authorize gspread client
+        client = gspread.authorize(creds)
+
+        # Open the worksheet
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+
+        # Fetch all raw values as a 2D matrix
+        all_values = sheet.get_all_values()
+
+        if len(all_values) < 2:
+            st.error("The Google Sheet does not contain enough rows.")
+            st.stop()
+
+        # Slice data starting from Row 2 (index 1) and Column B (index 1)
+        headers = all_values[1][1:]  # Row 2, starting at Column B
+        rows = [row[1:] for row in all_values[2:]]  # Rows starting from Row 3, Column B
+
+        # Build DataFrame
+        df = pd.DataFrame(rows, columns=headers)
+
+        # Drop entirely empty rows
+        df = df.replace("", np.nan).dropna(how="all")
+
+        # Convert numerical columns
+        numeric_cols = [
+            "Match Number", "Auto Samples", "Auto Specimens", "Auto Park Points",
+            "Teleop Samples", "Teleop Specimens", "Endgame Ascent Points",
+            "Auto Score", "Teleop Score", "Endgame Score", "Total Points"
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        return df
+
     except Exception as e:
-        st.error(f"Error loading Google Sheet data: {e}")
+        st.error(f"Failed to connect to Google Sheets via Service Account: {e}")
         st.stop()
 
-# Load Google Sheet directly
-df = load_data(GOOGLE_SHEET_URL)
+
+# Load Google Sheet via Service Account
+df = load_sheet_data_from_service_account()
 
 # Ensure Team Number is treated as string
 if "Team Number" in df.columns:
@@ -273,7 +314,8 @@ elif view_mode == "Team Deep-Dive":
     # Scout Comments
     st.markdown("### 📝 Scout Comments & Notes")
     for _, row in team_df.iterrows():
-        st.write(f"**Match {row['Match Number']}:** {row.get('Scout Comments', 'No comments recorded.')}")
+        comment = row.get("Scout Comments", "No comments recorded.")
+        st.write(f"**Match {row['Match Number']}:** {comment if pd.notna(comment) else 'No comments recorded.'}")
 
 # -----------------------------------------------------------------------------
 # VIEW 4: ALLIANCE DRAFT BOARD
