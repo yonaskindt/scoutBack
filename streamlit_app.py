@@ -1,347 +1,424 @@
 import streamlit as st
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
-from streamlit_drawable_canvas import st_canvas
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
 
-# --- Page Configuration ---
-st.set_page_config(page_title="FTC Scouting Dashboard", layout="wide")
+# Set Streamlit Page Configuration
+st.set_page_config(
+    page_title="FTC Scouting & Strategy Canvas",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-SHEET_ID = st.secrets.get("sheet_id", "1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY")
-
-
-# --- Google Sheets Loader (Reads Row 2+ and Column B+) ---
-@st.cache_data(ttl=30)
-def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
-    """Fetch sheet tab starting from Row 2 (headers) and Column B onward."""
-    if "gcp_service_account" not in st.secrets:
-        st.error("Missing `gcp_service_account` in Streamlit secrets.")
-        return pd.DataFrame()
-
+# -----------------------------------------------------------------------------
+# 1. DATA LOADING & GOOGLE SHEETS INTEGRATION
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=60)
+def load_data(sheet_url: str) -> pd.DataFrame:
+    """
+    Loads scouting data from a public Google Sheet CSV export.
+    Assumes header starts at Row 2 (skiprows=1) and data starts at Column B (usecols="B:Z").
+    """
     try:
-        creds_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-        client = gspread.authorize(creds)
+        # Convert standard Google Sheet URL to direct CSV export URL if needed
+        if "/edit" in sheet_url:
+            csv_url = sheet_url.split("/edit")[0] + "/gviz/tq?tqx=out:csv"
+        else:
+            csv_url = sheet_url
 
-        sheet = client.open_by_key(sheet_id)
-        worksheet = sheet.worksheet(tab_name)
-        all_rows = worksheet.get_all_values()
-
-        if not all_rows or len(all_rows) < 2:
-            return pd.DataFrame()
-        
-
-        # Row 2 headers, Row 3+ data, starting at Column B (index 1)
-        raw_headers = [col for col in all_rows[1][1:]]
-        data_rows = [row[1:] for row in all_rows[2:]]
-
-        # Clean and deduplicate headers
-        cleaned_headers = []
-        seen = {}
-        for idx, col in enumerate(raw_headers):
-            c_name = str(col).strip().lower()
-            if not c_name:
-                c_name = f"unnamed_{idx}"
-
-            if c_name in seen:
-                seen[c_name] += 1
-                c_name = f"{c_name}_{seen[c_name]}"
-            else:
-                seen[c_name] = 0
-
-            cleaned_headers.append(c_name)
-
-        df_out = pd.DataFrame(data_rows, columns=cleaned_headers)
-        df_out = df_out.loc[:, ~df_out.columns.str.startswith("unnamed_")]
-        df_out = df_out.replace(r"^\s*$", None, regex=True)
-
-        return df_out
-
-    except gspread.exceptions.WorksheetNotFound:
-        return pd.DataFrame()
+        # Read CSV starting from Row 2 and Column B onward
+        df = pd.read_csv(csv_url, skiprows=1)
+        df = df.iloc[:, 1:]  # Drop Column A (starts from Column B)
+        return df.dropna(how="all")
     except Exception as e:
-        st.error(f"Error loading tab '{tab_name}': {e}")
-        return pd.DataFrame()
+        st.warning(f"Unable to load online sheet ({e}). Loading fallback FTC sample data.")
+        return generate_ftc_sample_data()
 
 
-# --- Full FTC Data Processing Pipeline ---
-@st.cache_data(ttl=30)
-def load_all_ftc_data():
-    data = get_google_data(SHEET_ID, "Data")
-    if data.empty:
-        data = get_google_data(SHEET_ID, "Per_Team")
+def generate_ftc_sample_data() -> pd.DataFrame:
+    """Generates synthetic FTC scouting data for demonstration."""
+    np.random.seed(42)
+    teams = [11115, 12345, 14320, 16091, 18250, 19472, 20112, 21230]
+    matches = list(range(1, 11))
 
-    schema = get_google_data(SHEET_ID, "Matches")
-    ali = get_google_data(SHEET_ID, "Alliances")
+    data = []
+    for team in teams:
+        for match in matches:
+            auto_samples = np.random.randint(0, 4)
+            auto_specimens = np.random.randint(0, 3)
+            auto_park = np.random.choice([0, 3], p=[0.2, 0.8])
+            
+            teleop_samples = np.random.randint(2, 10)
+            teleop_specimens = np.random.randint(1, 6)
+            
+            endgame_ascent = np.random.choice([0, 3, 15, 30], p=[0.1, 0.2, 0.5, 0.2])
+            
+            auto_score = (auto_samples * 8) + (auto_specimens * 10) + auto_park
+            teleop_score = (teleop_samples * 4) + (teleop_specimens * 6)
+            endgame_score = endgame_ascent
+            total_score = auto_score + teleop_score + endgame_score
 
-    # Standardize headers across all DataFrames
-    for df in [data, schema, ali]:
-        if df is not None and not df.empty:
-            df.columns = df.columns.str.strip().str.lower()
-
-    # 1. Process Main Scouting Data
-    if data is not None and not data.empty:
-        t_col = next((c for c in ['team_number', 'team number', 'team', 'team_num'] if c in data.columns), None)
-        m_col = next((c for c in ['match_number', 'match number', 'match', 'match_num'] if c in data.columns), None)
-        a_col = next((c for c in ['alliance', 'color'] if c in data.columns), None)
-
-        if t_col:
-            data.rename(columns={t_col: 'team_number'}, inplace=True)
-            data['team_number'] = pd.to_numeric(data['team_number'], errors='coerce').fillna(0).astype(int)
-        if m_col:
-            data.rename(columns={m_col: 'match_number'}, inplace=True)
-            data['match_number'] = pd.to_numeric(data['match_number'], errors='coerce').fillna(0).astype(int)
-        if a_col:
-            data.rename(columns={a_col: 'alliance'}, inplace=True)
-
-        for col in ['+1', '+3', '+5', 'amount in hub', 'auto points', 'teleop points']:
-            if col in data.columns:
-                data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-
-        score_cols = [c for c in ['+1', '+3', '+5'] if c in data.columns]
-        if score_cols:
-            data['total score'] = data[score_cols].sum(axis=1)
-        elif 'total score' not in data.columns:
-            data['total score'] = 0
-
-        def clean_bool(val):
-            return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
-
-        for col in ['moved?', 'died?', 'tipped/fell over?', 'defence/ to other side']:
-            if col in data.columns:
-                clean_key = col.replace('?', '').split('/')[0].strip() + '_num'
-                data[clean_key] = data[col].apply(clean_bool)
-
-    # 2. Process Matches Schema
-    if schema is not None and not schema.empty:
-        m_schema_col = next((c for c in ['match_number', 'match number', 'match'] if c in schema.columns), schema.columns[0])
-        schema.rename(columns={m_schema_col: 'match_number'}, inplace=True)
-        schema['match_number'] = pd.to_numeric(schema['match_number'], errors='coerce').fillna(0).astype(int)
-
-    return data, schema, ali
+            data.append({
+                "Team Number": team,
+                "Match Number": match,
+                "Auto Samples": auto_samples,
+                "Auto Specimens": auto_specimens,
+                "Auto Park Points": auto_park,
+                "Teleop Samples": teleop_samples,
+                "Teleop Specimens": teleop_specimens,
+                "Endgame Ascent Points": endgame_ascent,
+                "Auto Score": auto_score,
+                "Teleop Score": teleop_score,
+                "Endgame Score": endgame_score,
+                "Total Points": total_score,
+                "Scout Comments": np.random.choice([
+                    "Consistent intake, fast cycles.",
+                    "Struggled with alignment in auto.",
+                    "Great defense and endgame ascent.",
+                    "Minor mechanical failure in teleop.",
+                    "Solid autonomous routine."
+                ])
+            })
+    return pd.DataFrame(data)
 
 
-# Load Data
-data_df, schema_df, alliance_df = load_all_ftc_data()
+# Sidebar Data Source Selector
+st.sidebar.title("⚙️ Configuration")
+data_source = st.sidebar.radio("Data Source", ["Sample Data", "Google Sheets URL"])
 
-if data_df is None or data_df.empty:
-    st.warning("⚠️ No scouting data loaded yet. Check your Google Sheet settings.")
-    st.stop()
-
-
-# --- Navigation Tabs ---
-tabs = st.tabs(["⚔️ Match Strategy & Field View", "📊 Per-Team Analytics", "🤝 Alliance Selection", "📋 Raw Data"])
-
-
-# ==============================================================================
-# TAB 1: MATCH STRATEGY & FIELD VIEW
-# ==============================================================================
-with tabs[0]:
-    st.title("Match Strategy & Field Planning")
-
-    # Fetch available match numbers
-    if schema_df is not None and not schema_df.empty and 'match_number' in schema_df.columns:
-        available_matches = sorted([m for m in schema_df['match_number'].unique() if m > 0])
-    elif data_df is not None and not data_df.empty and 'match_number' in data_df.columns:
-        available_matches = sorted([m for m in data_df['match_number'].unique() if m > 0])
+if data_source == "Google Sheets URL":
+    sheet_url = st.sidebar.text_input("Enter Public Google Sheet URL:")
+    if sheet_url:
+        df = load_data(sheet_url)
     else:
-        available_matches = [1]
+        st.info("Please enter a Google Sheet URL in the sidebar. Using sample data for now.")
+        df = generate_ftc_sample_data()
+else:
+    df = generate_ftc_sample_data()
 
-    if not available_matches:
-        available_matches = [1]
+# Clean team numbers
+if "Team Number" in df.columns:
+    df["Team Number"] = df["Team Number"].astype(str)
 
-    col_m, _ = st.columns([1, 2])
-    with col_m:
-        selected_match = st.selectbox("Select Match:", options=available_matches, key="m_sel")
+# -----------------------------------------------------------------------------
+# 2. MAIN NAVIGATION
+# -----------------------------------------------------------------------------
+st.title("🤖 FTC Strategy & Scouting Dashboard")
 
-    # Match Schema Lookup
-    m_row = None
-    if schema_df is not None and not schema_df.empty and 'match_number' in schema_df.columns:
-        matched = schema_df[schema_df['match_number'] == int(selected_match)]
-        if not matched.empty:
-            m_row = matched.iloc[0]
+view_mode = st.radio(
+    "Select View Mode",
+    ["Tactical Strategy Canvas", "Match Overview", "Team Deep-Dive", "Alliance Draft Board", "Playoff Simulator"],
+    horizontal=True
+)
 
-    def safe_get_team(row, keys):
-        if row is None:
-            return 0
-        for k in keys:
-            if k in row.index:
-                try:
-                    val = str(row[k]).strip()
-                    return int(float(val)) if val and val != "None" else 0
-                except (ValueError, TypeError):
-                    pass
-        return 0
+st.divider()
 
-    r1 = safe_get_team(m_row, ['r1', 'red1', 'red 1'])
-    r2 = safe_get_team(m_row, ['r2', 'red2', 'red 2'])
-    b1 = safe_get_team(m_row, ['b1', 'blue1', 'blue 1'])
-    b2 = safe_get_team(m_row, ['b2', 'blue2', 'blue 2'])
+# -----------------------------------------------------------------------------
+# VIEW 1: TACTICAL STRATEGY CANVAS (HTML5/JS Canvas Engine)
+# -----------------------------------------------------------------------------
+if view_mode == "Tactical Strategy Canvas":
+    st.subheader("📋 FTC Tactical Canvas")
+    st.markdown("Draw match plans, set paths, and position alliance robots directly on the FTC field.")
 
-    # --- INTERACTIVE DRAWABLE FIELD CANVAS ---
-    st.subheader(f"Field Strategy Canvas — Match {selected_match}")
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.markdown("### Controls")
+        draw_color = st.color_picker("Drawing Color", "#FF0000")
+        line_width = st.slider("Line Thickness", 1, 10, 3)
+        tool_mode = st.radio("Tool", ["Draw", "Erase Clear Path"])
+        st.info("Drag robot markers directly on the field. Use the canvas to draw auto routes or defense paths.")
 
-    c_tool, c_color, c_width, c_clear = st.columns([2, 2, 2, 1])
+    # HTML5/JS Embedded Canvas with Drag-and-Drop Markers & Freehand Drawing
+    canvas_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            #canvas-container {{
+                position: relative;
+                width: 700px;
+                height: 700px;
+                background-image: url('https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/FTC_Field_Diagram.svg/1024px-FTC_Field_Diagram.svg.png');
+                background-size: cover;
+                background-position: center;
+                border: 3px solid #333;
+                border-radius: 8px;
+                user-select: none;
+            }}
+            canvas {{
+                position: absolute;
+                top: 0;
+                left: 0;
+                cursor: crosshair;
+            }}
+            .robot-marker {{
+                position: absolute;
+                width: 42px;
+                height: 42px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-weight: bold;
+                font-family: sans-serif;
+                color: white;
+                cursor: grab;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.4);
+                border: 2px solid white;
+                z-index: 10;
+            }}
+            .red-alliance {{ background-color: #E63946; }}
+            .blue-alliance {{ background-color: #1D3557; }}
+        </style>
+    </head>
+    <body>
+        <div id="canvas-container">
+            <canvas id="paintCanvas" width="700" height="700"></canvas>
+            <!-- FTC Robots (2 Red, 2 Blue) -->
+            <div class="robot-marker red-alliance" id="r1" style="top: 100px; left: 50px;">R1</div>
+            <div class="robot-marker red-alliance" id="r2" style="top: 180px; left: 50px;">R2</div>
+            <div class="robot-marker blue-alliance" id="b1" style="top: 100px; left: 600px;">B1</div>
+            <div class="robot-marker blue-alliance" id="b2" style="top: 180px; left: 600px;">B2</div>
+        </div>
 
-    with c_tool:
-        drawing_mode = st.selectbox(
-            "Drawing Tool:",
-            ("freedraw", "line", "rect", "circle", "transform"),
-            help="Select 'transform' to select and move drawn elements or robot icons."
-        )
-    with c_color:
-        stroke_color = st.color_picker("Stroke Color:", "#ff0000")
-    with c_width:
-        stroke_width = st.slider("Stroke Width:", 1, 15, 3)
+        <script>
+            const canvas = document.getElementById('paintCanvas');
+            const ctx = canvas.getContext('2d');
+            let isDrawing = false;
+            let color = '{draw_color}';
+            let lineWidth = {line_width};
+            let toolMode = '{tool_mode}';
 
-    # Optional background image field URL (Replaced with standard FTC field layout image)
-    bg_image_url = "https://raw.githubusercontent.com/FIRST-Tech-Challenge/ftc_app/master/doc/images/field_outer.png"
+            ctx.strokeStyle = color;
+            ctx.lineWidth = lineWidth;
+            ctx.lineCap = 'round';
 
-    # Interactive Canvas Component
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # Fill color for shapes
-        stroke_width=stroke_width,
-        stroke_color=stroke_color,
-        background_image_url=bg_image_url,
-        update_streamlit=True,
-        height=500,
-        width=700,
-        drawing_mode=drawing_mode,
-        key=f"canvas_match_{selected_match}",
+            canvas.addEventListener('mousedown', (e) => {{
+                if (toolMode === 'Erase Clear Path') {{
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    return;
+                }}
+                isDrawing = true;
+                ctx.beginPath();
+                ctx.moveTo(e.offsetX, e.offsetY);
+            }});
+
+            canvas.addEventListener('mousemove', (e) => {{
+                if (isDrawing) {{
+                    ctx.lineTo(e.offsetX, e.offsetY);
+                    ctx.stroke();
+                }}
+            }});
+
+            canvas.addEventListener('mouseup', () => isDrawing = false);
+            canvas.addEventListener('mouseleave', () => isDrawing = false);
+
+            // Drag and Drop for Robot Markers
+            const markers = document.querySelectorAll('.robot-marker');
+            markers.forEach(marker => {{
+                marker.addEventListener('mousedown', (e) => {{
+                    let shiftX = e.clientX - marker.getBoundingClientRect().left;
+                    let shiftY = e.clientY - marker.getBoundingClientRect().top;
+
+                    function moveAt(pageX, pageY) {{
+                        const container = document.getElementById('canvas-container').getBoundingClientRect();
+                        let newLeft = pageX - container.left - shiftX;
+                        let newTop = pageY - container.top - shiftY;
+
+                        marker.style.left = newLeft + 'px';
+                        marker.style.top = newTop + 'px';
+                    }}
+
+                    function onMouseMove(event) {{
+                        moveAt(event.pageX, event.pageY);
+                    }}
+
+                    document.addEventListener('mousemove', onMouseMove);
+
+                    document.addEventListener('mouseup', () => {{
+                        document.removeEventListener('mousemove', onMouseMove);
+                    }}, {{ once: true }});
+                }});
+
+                marker.ondragstart = () => false;
+            }});
+        </script>
+    </body>
+    </html>
+    """
+
+    with col2:
+        st.components.v1.html(canvas_html, height=720)
+
+# -----------------------------------------------------------------------------
+# VIEW 2: MATCH OVERVIEW
+# -----------------------------------------------------------------------------
+elif view_mode == "Match Overview":
+    st.subheader("⚔️ Match Strategy & Alliance Comparison")
+
+    all_teams = sorted(df["Team Number"].unique())
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 🔴 Red Alliance")
+        red1 = st.selectbox("Red 1", all_teams, index=0)
+        red2 = st.selectbox("Red 2", all_teams, index=min(1, len(all_teams)-1))
+
+    with col2:
+        st.markdown("### 🔵 Blue Alliance")
+        blue1 = st.selectbox("Blue 1", all_teams, index=min(2, len(all_teams)-1))
+        blue2 = st.selectbox("Blue 2", all_teams, index=min(3, len(all_teams)-1))
+
+    red_teams = [red1, red2]
+    blue_teams = [blue1, blue2]
+
+    # Compute alliance expected scores
+    red_df = df[df["Team Number"].isin(red_teams)]
+    blue_df = df[df["Team Number"].isin(blue_teams)]
+
+    red_avg = red_df.groupby("Team Number")["Total Points"].mean().sum()
+    blue_avg = blue_df.groupby("Team Number")["Total Points"].mean().sum()
+
+    st.divider()
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    metric_col1.metric("Predicted Red Score", f"{red_avg:.1f} pts")
+    metric_col2.metric("Predicted Blue Score", f"{blue_avg:.1f} pts")
+    diff = red_avg - blue_avg
+    metric_col3.metric("Projected Margin", f"{abs(diff):.1f} pts", delta=f"{'Red' if diff > 0 else 'Blue'} Advantage")
+
+    # Comparison Breakdown Chart
+    comp_df = df[df["Team Number"].isin(red_teams + blue_teams)].copy()
+    avg_breakdown = comp_df.groupby("Team Number")[["Auto Score", "Teleop Score", "Endgame Score"]].mean().reset_index()
+
+    fig = px.bar(
+        avg_breakdown,
+        x="Team Number",
+        y=["Auto Score", "Teleop Score", "Endgame Score"],
+        title="Average Point Breakdown by Match Phase",
+        labels={"value": "Average Points", "variable": "Phase"},
+        barmode="stack"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# VIEW 3: TEAM DEEP-DIVE
+# -----------------------------------------------------------------------------
+elif view_mode == "Team Deep-Dive":
+    st.subheader("🔍 Individual Team Analysis")
+
+    selected_team = st.selectbox("Select Team", sorted(df["Team Number"].unique()))
+    team_df = df[df["Team Number"] == selected_team].sort_values("Match Number")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Matches Played", len(team_df))
+    m2.metric("Avg Total Score", f"{team_df['Total Points'].mean():.1f}")
+    m3.metric("Avg Auto Score", f"{team_df['Auto Score'].mean():.1f}")
+    m4.metric("Avg Endgame Score", f"{team_df['Endgame Score'].mean():.1f}")
+
+    # Trend Chart Over Matches
+    fig_trend = px.line(
+        team_df,
+        x="Match Number",
+        y=["Auto Score", "Teleop Score", "Endgame Score", "Total Points"],
+        markers=True,
+        title=f"Performance Trend - Team {selected_team}"
+    )
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+    # Scout Comments
+    st.markdown("### 📝 Scout Comments & Notes")
+    for _, row in team_df.iterrows():
+        st.write(f"**Match {row['Match Number']}:** {row.get('Scout Comments', 'No comments recorded.')}")
+
+# -----------------------------------------------------------------------------
+# VIEW 4: ALLIANCE DRAFT BOARD
+# -----------------------------------------------------------------------------
+elif view_mode == "Alliance Draft Board":
+    st.subheader("📊 Alliance Selection Draft Rankings")
+
+    # Compute overall team metrics
+    draft_df = df.groupby("Team Number").agg(
+        Avg_Total=("Total Points", "mean"),
+        Avg_Auto=("Auto Score", "mean"),
+        Avg_Teleop=("Teleop Score", "mean"),
+        Avg_Endgame=("Endgame Score", "mean"),
+        Max_Total=("Total Points", "max"),
+        Consistency=("Total Points", "std")
+    ).reset_index()
+
+    # Fill NaN std with 0 for single matches
+    draft_df["Consistency"] = draft_df["Consistency"].fillna(0)
+
+    # Sort option
+    sort_by = st.selectbox("Sort Draft Board By", ["Avg_Total", "Avg_Auto", "Avg_Teleop", "Avg_Endgame", "Max_Total"])
+    draft_df = draft_df.sort_values(by=sort_by, ascending=False).reset_index(drop=True)
+
+    st.dataframe(
+        draft_df.style.highlight_max(axis=0, color="#d4edda"),
+        use_container_width=True
     )
 
-    st.write("---")
+    fig_scatter = px.scatter(
+        draft_df,
+        x="Avg_Auto",
+        y="Avg_Teleop",
+        size="Avg_Total",
+        color="Team Number",
+        text="Team Number",
+        title="Auto vs. Teleop Efficiency Matrix"
+    )
+    fig_scatter.update_traces(textposition='top center')
+    st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # --- 4 TEAM PERFORMANCE CARDS BELOW FIELD ---
-    st.subheader("Match Alliance Team Breakdown")
+# -----------------------------------------------------------------------------
+# VIEW 5: PLAYOFF SIMULATOR
+# -----------------------------------------------------------------------------
+elif view_mode == "Playoff Simulator":
+    st.subheader("🏆 Bracket & Playoff Simulator")
 
-    def get_team_stats(team_num):
-        if team_num <= 0 or 'team_number' not in data_df.columns:
-            return {"avg": "N/A", "max": "N/A", "died": "N/A", "move": "N/A"}
-        
-        t_data = data_df[data_df['team_number'] == team_num]
-        if t_data.empty:
-            return {"avg": "No Data", "max": "No Data", "died": "No Data", "move": "No Data"}
+    st.markdown("Simulate a bracket matchup between two 2-robot alliance combinations.")
 
-        avg_score = f"{t_data['total score'].mean():.1f}"
-        max_score = f"{int(t_data['total score'].max())}"
-        
-        died_rate = f"{t_data['died_num'].mean()*100:.0f}%" if 'died_num' in t_data.columns else "N/A"
-        move_rate = f"{t_data['moved_num'].mean()*100:.0f}%" if 'moved_num' in t_data.columns else "N/A"
+    all_teams = sorted(df["Team Number"].unique())
 
-        return {"avg": avg_score, "max": max_score, "died": died_rate, "move": move_rate}
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("#### Alliance 1")
+        a1 = st.selectbox("Captain (Alliance 1)", all_teams, index=0, key="a1")
+        a2 = st.selectbox("Pick 1 (Alliance 1)", all_teams, index=min(1, len(all_teams)-1), key="a2")
 
-    card_r1, card_r2, card_b1, card_b2 = st.columns(4)
+    with col_b:
+        st.markdown("#### Alliance 2")
+        b1 = st.selectbox("Captain (Alliance 2)", all_teams, index=min(2, len(all_teams)-1), key="b1")
+        b2 = st.selectbox("Pick 1 (Alliance 2)", all_teams, index=min(3, len(all_teams)-1), key="b2")
 
-    # Red 1
-    s_r1 = get_team_stats(r1)
-    with card_r1:
-        st.markdown(f"""
-        <div style="background-color: #ff4b4b15; border: 2px solid #ff4b4b; border-radius: 10px; padding: 15px;">
-            <h4 style="color: #ff4b4b; margin:0;">🔴 RED 1</h4>
-            <h2 style="margin:5px 0;">Team {r1 if r1 else 'N/A'}</h2>
-            <hr style="margin:8px 0;">
-            <p><b>Avg Score:</b> {s_r1['avg']}</p>
-            <p><b>Max Score:</b> {s_r1['max']}</p>
-            <p><b>Auto Move:</b> {s_r1['move']}</p>
-            <p><b>Died Rate:</b> {s_r1['died']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+    # Monte Carlo Match Simulation
+    st.divider()
+    if st.button("🚀 Run 1,000 Match Simulations"):
+        a1_scores = df[df["Team Number"] == a1]["Total Points"].values
+        a2_scores = df[df["Team Number"] == a2]["Total Points"].values
+        b1_scores = df[df["Team Number"] == b1]["Total Points"].values
+        b2_scores = df[df["Team Number"] == b2]["Total Points"].values
 
-    # Red 2
-    s_r2 = get_team_stats(r2)
-    with card_r2:
-        st.markdown(f"""
-        <div style="background-color: #ff4b4b15; border: 2px solid #ff4b4b; border-radius: 10px; padding: 15px;">
-            <h4 style="color: #ff4b4b; margin:0;">🔴 RED 2</h4>
-            <h2 style="margin:5px 0;">Team {r2 if r2 else 'N/A'}</h2>
-            <hr style="margin:8px 0;">
-            <p><b>Avg Score:</b> {s_r2['avg']}</p>
-            <p><b>Max Score:</b> {s_r2['max']}</p>
-            <p><b>Auto Move:</b> {s_r2['move']}</p>
-            <p><b>Died Rate:</b> {s_r2['died']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # Sample with replacement
+        n_sims = 1000
+        sim_a = np.random.choice(a1_scores, n_sims) + np.random.choice(a2_scores, n_sims)
+        sim_b = np.random.choice(b1_scores, n_sims) + np.random.choice(b2_scores, n_sims)
 
-    # Blue 1
-    s_b1 = get_team_stats(b1)
-    with card_b1:
-        st.markdown(f"""
-        <div style="background-color: #1c83e115; border: 2px solid #1c83e1; border-radius: 10px; padding: 15px;">
-            <h4 style="color: #1c83e1; margin:0;">🔵 BLUE 1</h4>
-            <h2 style="margin:5px 0;">Team {b1 if b1 else 'N/A'}</h2>
-            <hr style="margin:8px 0;">
-            <p><b>Avg Score:</b> {s_b1['avg']}</p>
-            <p><b>Max Score:</b> {s_b1['max']}</p>
-            <p><b>Auto Move:</b> {s_b1['move']}</p>
-            <p><b>Died Rate:</b> {s_b1['died']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        a_wins = np.sum(sim_a > sim_b)
+        b_wins = np.sum(sim_b > sim_a)
+        ties = np.sum(sim_a == sim_b)
 
-    # Blue 2
-    s_b2 = get_team_stats(b2)
-    with card_b2:
-        st.markdown(f"""
-        <div style="background-color: #1c83e115; border: 2px solid #1c83e1; border-radius: 10px; padding: 15px;">
-            <h4 style="color: #1c83e1; margin:0;">🔵 BLUE 2</h4>
-            <h2 style="margin:5px 0;">Team {b2 if b2 else 'N/A'}</h2>
-            <hr style="margin:8px 0;">
-            <p><b>Avg Score:</b> {s_b2['avg']}</p>
-            <p><b>Max Score:</b> {s_b2['max']}</p>
-            <p><b>Auto Move:</b> {s_b2['move']}</p>
-            <p><b>Died Rate:</b> {s_b2['died']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"### Simulation Results ({n_sims} iterations)")
+        res_col1, res_col2, res_col3 = st.columns(3)
+        res_col1.metric("Alliance 1 Win Rate", f"{(a_wins/n_sims)*100:.1f}%")
+        res_col2.metric("Alliance 2 Win Rate", f"{(b_wins/n_sims)*100:.1f}%")
+        res_col3.metric("Tie Chance", f"{(ties/n_sims)*100:.1f}%")
 
-
-# ==============================================================================
-# TAB 2: PER-TEAM ANALYTICS
-# ==============================================================================
-with tabs[1]:
-    st.title("Per-Team Performance Analysis")
-
-    if 'team_number' in data_df.columns:
-        all_teams = sorted([t for t in data_df['team_number'].unique() if t > 0])
-        if all_teams:
-            selected_team = st.selectbox("Select Team:", options=all_teams, key="t_sel")
-            t_data = data_df[data_df['team_number'] == selected_team]
-
-            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            with kpi1:
-                st.metric("Matches Scouted", len(t_data))
-            with kpi2:
-                st.metric("Avg Score", f"{t_data['total score'].mean():.1f}" if not t_data.empty else "0")
-            with kpi3:
-                st.metric("Max Score", int(t_data['total score'].max()) if not t_data.empty else 0)
-            with kpi4:
-                reliability = (1 - t_data['died_num'].mean()) * 100 if 'died_num' in t_data.columns and not t_data.empty else 100
-                st.metric("Reliability", f"{reliability:.0f}%")
-
-
-# ==============================================================================
-# TAB 3: ALLIANCE SELECTION RANKINGS
-# ==============================================================================
-with tabs[2]:
-    st.title("Alliance Selection Leaderboard")
-
-    if 'team_number' in data_df.columns and not data_df.empty:
-        leaderboard = data_df.groupby('team_number').agg(
-            Matches_Played=('total score', 'count'),
-            Avg_Score=('total score', 'mean'),
-            Max_Score=('total score', 'max')
-        ).reset_index().sort_values(by='Avg_Score', ascending=False)
-
-        st.dataframe(leaderboard, use_container_width=True)
-
-
-# ==============================================================================
-# TAB 4: RAW DATA
-# ==============================================================================
-with tabs[3]:
-    st.title("Complete Scouting Dataset")
-    st.dataframe(data_df, use_container_width=True)
+        # Distribution plot
+        fig_sim = go.Figure()
+        fig_sim.add_trace(go.Histogram(x=sim_a, name="Alliance 1", opacity=0.75, marker_color="red"))
+        fig_sim.add_trace(go.Histogram(x=sim_b, name="Alliance 2", opacity=0.75, marker_color="blue"))
+        fig_sim.update_layout(barmode='overlay', title="Score Distribution Simulation", xaxis_title="Total Alliance Points", yaxis_title="Frequency")
+        st.plotly_chart(fig_sim, use_container_width=True)
