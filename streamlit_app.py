@@ -16,10 +16,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
-# --- DATA FETCHING WITH CACHING ---
 @st.cache_data(ttl=30)
 def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
-    """Fetch and standardize data from a Google Sheet tab using Streamlit secrets."""
+    """Fetch data starting from Row 2 and Column B onward."""
     if "gcp_service_account" not in st.secrets:
         st.error("Missing `gcp_service_account` in Streamlit secrets.")
         return pd.DataFrame()
@@ -31,20 +30,48 @@ def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
 
         sheet = client.open_by_key(sheet_id)
         worksheet = sheet.worksheet(tab_name)
-        records = worksheet.get_all_records()
+        
+        # Fetch all values from the sheet
+        all_rows = worksheet.get_all_values()
 
-        if not records:
+        # We need at least Row 2 (headers) and Row 3 (first data row)
+        if not all_rows or len(all_rows) < 2:
             return pd.DataFrame()
 
-        df_out = pd.DataFrame(records)
-        df_out.columns = [str(c).strip().lower() for c in df_out.columns]
+        # Slice starting from Row 2 (index 1) and Column B (index 1)
+        raw_headers = [col for col in all_rows[1][1:]]  # Row 2, Col B+
+        data_rows = [row[1:] for row in all_rows[2:]]   # Row 3+, Col B+
+
+        # Clean and deduplicate headers
+        cleaned_headers = []
+        seen = {}
+        for idx, col in enumerate(raw_headers):
+            c_name = str(col).strip().lower()
+            if not c_name:
+                c_name = f"unnamed_{idx}"
+            
+            if c_name in seen:
+                seen[c_name] += 1
+                c_name = f"{c_name}_{seen[c_name]}"
+            else:
+                seen[c_name] = 0
+            
+            cleaned_headers.append(c_name)
+
+        df_out = pd.DataFrame(data_rows, columns=cleaned_headers)
+
+        # Drop any trailing blank/unnamed columns
+        df_out = df_out.loc[:, ~df_out.columns.str.startswith("unnamed_")]
+        
+        # Clean empty string cells
+        df_out = df_out.replace(r'^\s*$', None, regex=True)
+
         return df_out
 
     except gspread.exceptions.WorksheetNotFound:
-        st.error(f"Worksheet '{tab_name}' not found.")
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error fetching '{tab_name}': {e}")
+        st.error(f"Error reading '{tab_name}': {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=30)
