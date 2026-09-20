@@ -15,7 +15,7 @@ st.set_page_config(
 # 1. HARDCODED GOOGLE SHEET CONFIGURATION & DATA LOADING
 # -----------------------------------------------------------------------------
 # Replace this URL with your actual public Google Sheet link
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY/edit?usp=sharing"
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY/edit?gid=0#gid=0"
 
 @st.cache_data(ttl=60)
 def load_data(sheet_url: str) -> pd.DataFrame:
