@@ -50,7 +50,7 @@ def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
 @st.cache_data(ttl=30)
 def load_all_ftc_data():
     """Loads all worksheets and preprocesses fields for application logic."""
-    data = get_google_data(SHEET_ID, "Data_Input")
+    data = get_google_data(SHEET_ID, "Data")
     schema = get_google_data(SHEET_ID, "Matches")
     ali = get_google_data(SHEET_ID, "Alliances")
 
