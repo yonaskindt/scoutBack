@@ -34,6 +34,7 @@ def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
 
         if not all_rows or len(all_rows) < 2:
             return pd.DataFrame()
+        
 
         # Row 2 headers, Row 3+ data, starting at Column B (index 1)
         raw_headers = [col for col in all_rows[1][1:]]
