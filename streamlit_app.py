@@ -10,7 +10,7 @@ SCOPES = [
 ]
 
 # Set your Google Sheet ID here or put it in st.secrets["sheet_id"]
-SHEET_ID = st.secrets.get("sheet_id", "YOUR_GOOGLE_SHEET_ID_HERE")
+SHEET_ID = st.secrets.get("sheet_id", "1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY")
 
 st.set_page_config(page_title="FTC Scouting Dashboard", layout="wide")
 
