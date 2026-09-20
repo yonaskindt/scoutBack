@@ -8,21 +8,23 @@ import numpy as np
 st.set_page_config(
     page_title="FTC Scouting & Strategy Canvas",
     page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 # -----------------------------------------------------------------------------
-# 1. DATA LOADING & GOOGLE SHEETS INTEGRATION
+# 1. HARDCODED GOOGLE SHEET CONFIGURATION & DATA LOADING
 # -----------------------------------------------------------------------------
+# Replace this URL with your actual public Google Sheet link
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY/edit?usp=sharing"
+
 @st.cache_data(ttl=60)
 def load_data(sheet_url: str) -> pd.DataFrame:
     """
     Loads scouting data from a public Google Sheet CSV export.
-    Assumes header starts at Row 2 (skiprows=1) and data starts at Column B (usecols="B:Z").
+    Assumes header starts at Row 2 (skiprows=1) and data starts at Column B.
     """
     try:
-        # Convert standard Google Sheet URL to direct CSV export URL if needed
+        # Convert standard Google Sheet URL to direct CSV export URL
         if "/edit" in sheet_url:
             csv_url = sheet_url.split("/edit")[0] + "/gviz/tq?tqx=out:csv"
         else:
@@ -33,72 +35,13 @@ def load_data(sheet_url: str) -> pd.DataFrame:
         df = df.iloc[:, 1:]  # Drop Column A (starts from Column B)
         return df.dropna(how="all")
     except Exception as e:
-        st.warning(f"Unable to load online sheet ({e}). Loading fallback FTC sample data.")
-        return generate_ftc_sample_data()
+        st.error(f"Error loading Google Sheet data: {e}")
+        st.stop()
 
+# Load Google Sheet directly
+df = load_data(GOOGLE_SHEET_URL)
 
-def generate_ftc_sample_data() -> pd.DataFrame:
-    """Generates synthetic FTC scouting data for demonstration."""
-    np.random.seed(42)
-    teams = [11115, 12345, 14320, 16091, 18250, 19472, 20112, 21230]
-    matches = list(range(1, 11))
-
-    data = []
-    for team in teams:
-        for match in matches:
-            auto_samples = np.random.randint(0, 4)
-            auto_specimens = np.random.randint(0, 3)
-            auto_park = np.random.choice([0, 3], p=[0.2, 0.8])
-            
-            teleop_samples = np.random.randint(2, 10)
-            teleop_specimens = np.random.randint(1, 6)
-            
-            endgame_ascent = np.random.choice([0, 3, 15, 30], p=[0.1, 0.2, 0.5, 0.2])
-            
-            auto_score = (auto_samples * 8) + (auto_specimens * 10) + auto_park
-            teleop_score = (teleop_samples * 4) + (teleop_specimens * 6)
-            endgame_score = endgame_ascent
-            total_score = auto_score + teleop_score + endgame_score
-
-            data.append({
-                "Team Number": team,
-                "Match Number": match,
-                "Auto Samples": auto_samples,
-                "Auto Specimens": auto_specimens,
-                "Auto Park Points": auto_park,
-                "Teleop Samples": teleop_samples,
-                "Teleop Specimens": teleop_specimens,
-                "Endgame Ascent Points": endgame_ascent,
-                "Auto Score": auto_score,
-                "Teleop Score": teleop_score,
-                "Endgame Score": endgame_score,
-                "Total Points": total_score,
-                "Scout Comments": np.random.choice([
-                    "Consistent intake, fast cycles.",
-                    "Struggled with alignment in auto.",
-                    "Great defense and endgame ascent.",
-                    "Minor mechanical failure in teleop.",
-                    "Solid autonomous routine."
-                ])
-            })
-    return pd.DataFrame(data)
-
-
-# Sidebar Data Source Selector
-st.sidebar.title("⚙️ Configuration")
-data_source = st.sidebar.radio("Data Source", ["Sample Data", "Google Sheets URL"])
-
-if data_source == "Google Sheets URL":
-    sheet_url = st.sidebar.text_input("Enter Public Google Sheet URL:")
-    if sheet_url:
-        df = load_data(sheet_url)
-    else:
-        st.info("Please enter a Google Sheet URL in the sidebar. Using sample data for now.")
-        df = generate_ftc_sample_data()
-else:
-    df = generate_ftc_sample_data()
-
-# Clean team numbers
+# Ensure Team Number is treated as string
 if "Team Number" in df.columns:
     df["Team Number"] = df["Team Number"].astype(str)
 
