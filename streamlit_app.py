@@ -1,430 +1,319 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import numpy as np
-import gspread
-from google.oauth2.service_account import Credentials
 import os
 import base64
 
-# -----------------------------------------------------------------------------
-# PAGE CONFIGURATION
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="FTC Scouting & Strategy Dashboard",
-    page_icon="🤖",
-    layout="wide"
-)
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Scouting Hub", layout="wide", initial_sidebar_state="expanded")
 
-# Set your target Google Spreadsheet ID (found in your Google Sheet URL)
-SPREADSHEET_ID = "1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY"
+# --- INITIALIZE SESSION STATE ---
+if 'comp_mode' not in st.session_state:
+    st.session_state.comp_mode = "FTC" if os.path.exists("scouting_data_ftc.xlsx") else "FRC"
 
-# -----------------------------------------------------------------------------
-# 1. LOCAL FIELD IMAGE HELPER (ftcfield.png)
-# -----------------------------------------------------------------------------
-def get_image_base64(file_path: str) -> str:
-    """Converts local image to base64 string for direct embedding into HTML5 Canvas."""
-    if os.path.exists(file_path):
-        with open(file_path, "rb") as f:
-            data = f.read()
-        return f"data:image/png;base64,{base64.b64encode(data).decode()}"
-    else:
-        st.error(f"⚠️ Image file '{file_path}' not found in the root directory. Make sure 'ftcfield.png' is placed next to 'streamlit_app.py'.")
-        return ""
+if 'alliances_state' not in st.session_state:
+    st.session_state.alliances_state = {i: {"c": 0, "p1": 0, "p2": 0} for i in range(1, 9)}
 
-FIELD_IMAGE_B64 = get_image_base64("ftcfield.png")
+if 'm_sel_val' not in st.session_state:
+    st.session_state.m_sel_val = 1 
 
-# -----------------------------------------------------------------------------
-# 2. GOOGLE SERVICE ACCOUNT DATA LOADER
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=60)
-def load_all_sheets():
-    """
-    Connects via Google Service Account and parses:
-    - 'Data' sheet: Header on Row 2, drops Column A (Scouter Initial)
-    - 'Per_Team' sheet: Header on Row 2, unique teams on Column B
-    """
+if 'active_team_selection' not in st.session_state:
+    st.session_state.active_team_selection = None
+
+# Persistence for Playoff Swaps
+if 'playoff_red_swap' not in st.session_state: st.session_state.playoff_red_swap = False
+if 'playoff_blue_swap' not in st.session_state: st.session_state.playoff_blue_swap = False
+if 'playoff_red_out' not in st.session_state: st.session_state.playoff_red_out = None
+if 'playoff_blue_out' not in st.session_state: st.session_state.playoff_blue_out = None
+
+# --- CUSTOM CSS ---
+st.markdown("""
+    <style>
+    .main .block-container { max-width: 100%; padding: 0.5rem 1rem; }
+    .team-info-box-detailed { padding: 8px; border-radius: 8px; border-top: 4px solid; background-color: rgba(255, 255, 255, 0.08); font-size: 12px; box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 5px; }
+    .stat-row { display: flex; justify-content: space-between; margin-bottom: 1px; }
+    .note-text { font-style: italic; font-size: 10px; color: #BDC3C7; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3px; padding-top: 2px; height: 32px; overflow: hidden; }
+    .field-side-label { text-align: center; display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 200px; }
+    .side-big { font-size: 42px; font-weight: 900; color: #4F8BF9; line-height: 1; }
+    .side-small { font-size: 11px; color: #BDC3C7; text-transform: uppercase; margin-top: -5px; }
+    .staging-area { background: rgba(79, 139, 249, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #4F8BF9; margin-bottom: 20px; text-align: center; }
+    [data-testid="stHtml"] { padding: 0 !important; margin: 0 !important; }
+    iframe { display: block; margin: 0 auto; border: none; overflow: hidden; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 1. DATA LOADING ---
+@st.cache_data
+def load_data(mode):
+    file_name = "scouting_data.xlsx" if mode == "FRC" else "scouting_data_ftc.xlsx"
+    if not os.path.exists(file_name): return None, None, None, None
     try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets.readonly",
-            "https://www.googleapis.com/auth/drive.readonly",
-        ]
+        schema = pd.read_excel(file_name, sheet_name="Matches", header=0)
+        data = pd.read_excel(file_name, sheet_name="Data_Input")
+        ali = pd.read_excel(file_name, sheet_name="Alliances")
+        pit = pd.read_excel(file_name, sheet_name="Pit_Input") if mode == "FRC" else pd.DataFrame()
+        for d in [schema, data, ali]: 
+            d.columns = d.columns.str.strip()
+            if mode == "FTC": d.dropna(how='all', axis=1, inplace=True)
+        for col in ['+1', '+3', '+5', 'Amount in Hub']:
+            if col in data.columns: data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
+        score_cols = [c for c in ['+1', '+3', '+5'] if c in data.columns]
+        data['Total Score'] = data[score_cols].sum(axis=1) if score_cols else 0
+        def clean_bool(val): return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
+        for col in ['Moved?', 'Died?', 'Tipped/Fell Over?', 'Defence/ to other side']:
+            if col in data.columns: data[col.replace('?','').split('/')[0]+'_Num'] = data[col].apply(clean_bool)
+        return data, pit, schema, ali
+    except Exception: return None, None, None, None
 
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=scopes,
-        )
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("⚙️ HUB CONTROL")
+    mode_selection = st.radio("Competition", ["FRC", "FTC"], index=0 if st.session_state.comp_mode == "FRC" else 1, horizontal=True)
+    if mode_selection != st.session_state.comp_mode:
+        st.session_state.comp_mode = mode_selection
+        st.cache_data.clear()
+        st.rerun()
+    view = st.radio("Navigation", ["🗺️ Field Map", "📊 Overview", "🤖 per team", "🤝 Alliance Selection", "🏆 Playoffs"], label_visibility="collapsed")
 
-        client = gspread.authorize(creds)
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+df, pit_df, schema_df, alliance_df = load_data(st.session_state.comp_mode)
+if df is None: st.stop()
 
-        # ------------------- A. LOAD 'Data' SHEET -------------------
-        data_ws = spreadsheet.worksheet("Data")
-        data_vals = data_ws.get_all_values()
+# --- 2. HELPERS ---
+def get_team_stats(team_num):
+    if team_num == 0: return {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "died": 0, "warn": False}
+    t_data = df[df['Team Number'] == team_num]
+    stat_dict = {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "warn": False}
+    if not t_data.empty:
+        stat_dict.update({"avg": t_data['Total Score'].mean(), "count": len(t_data)})
+        if 'Climbing' in t_data: stat_dict["climb_pref"] = t_data['Climbing'].dropna().mode().iloc[0] if not t_data['Climbing'].dropna().empty else "N/A"
+        if 'driver skill' in t_data: stat_dict["driver"] = t_data['driver skill'].mean()
+        note_s = t_data.dropna(subset=['Comments'])
+        if not note_s.empty: stat_dict['last_note'] = note_s.iloc[-1]['Comments']
+        died_sum = (t_data['Died_Num'].sum() if 'Died_Num' in t_data else 0) + (t_data['Tipped_Num'].sum() if 'Tipped_Num' in t_data else 0)
+        stat_dict['died'] = int(died_sum)
+        stat_dict['warn'] = (died_sum / len(t_data)) > 0.2 if len(t_data) > 0 else False
+    return stat_dict
 
-        if len(data_vals) >= 2:
-            # Header is on Row 2 (index 1), Data starts on Row 3 (index 2)
-            headers_data = data_vals[1]
-            rows_data = data_vals[2:]
+def detailed_card(team_num, color_hex):
+    s = get_team_stats(team_num)
+    st.markdown(f"""<div class="team-info-box-detailed" style="border-top-color: {color_hex};">
+        <div class="stat-row"><b>{'⚠️ ' if s['warn'] else ''}{team_num}</b> <span>{s['count']} matches</span></div>
+        <div class="stat-row">Avg: <b>{round(s['avg'], 1)}</b></div>
+        <div class="stat-row">Climb: {s['climb_pref']} <span>Skill: {round(s['driver'], 1)}</span></div>
+        <div class="note-text">{s['last_note'][:75]}...</div>
+    </div>""", unsafe_allow_html=True)
 
-            df_data = pd.DataFrame(rows_data, columns=headers_data)
+def render_field_interactive(red_teams, blue_teams, match_label, red_pred, blue_pred, width_mode="FRC"):
+    img_file = "field.png" if width_mode == "FRC" else "ftcfield.png"
+    # Adjusted aspect to 28% for FRC to make it "higher" while containment remains
+    aspect = "28%" if width_mode == "FRC" else "100%"
+    max_h = "400px" if width_mode == "FRC" else "550px"
+    max_w = "100%" if width_mode == "FRC" else "550px"
+    
+    img_b64 = ""
+    if os.path.exists(img_file):
+        with open(img_file, "rb") as f: img_b64 = base64.b64encode(f.read()).decode()
+    
+    red_bots = "".join([f'<div class="bot red" style="left: 15%; top: {25+(i*35)}%;" id="r{i}">{red_teams[i]}</div>' for i in range(len(red_teams))])
+    blue_bots = "".join([f'<div class="bot blue" style="right: 15%; top: {25+(i*35)}%;" id="b{i}">{blue_teams[i]}</div>' for i in range(len(blue_teams))])
 
-            # Drop Column A (index 0 - Scouter Initial)
-            df_data = df_data.iloc[:, 1:]
-
-            # Remove entirely empty rows
-            df_data = df_data.replace("", np.nan).dropna(how="all")
-
-            # Clean and convert team/match identifiers
-            for col in df_data.columns:
-                if "team" in col.lower():
-                    df_data[col] = df_data[col].astype(str).str.strip()
-                elif "match" in col.lower():
-                    df_data[col] = pd.to_numeric(df_data[col], errors="coerce").fillna(0)
-                else:
-                    # Try numeric conversion for scoring columns
-                    df_data[col] = pd.to_numeric(df_data[col], errors="ignore")
-        else:
-            df_data = pd.DataFrame()
-
-        # ------------------- B. LOAD 'Per_Team' SHEET -------------------
-        per_team_ws = spreadsheet.worksheet("Per_Team")
-        per_team_vals = per_team_ws.get_all_values()
-
-        if len(per_team_vals) >= 2:
-            # Header is on Row 2 (index 1), Data starts on Row 3 (index 2)
-            headers_team = per_team_vals[1]
-            rows_team = per_team_vals[2:]
-
-            df_per_team = pd.DataFrame(rows_team, columns=headers_team)
-            df_per_team = df_per_team.replace("", np.nan).dropna(how="all")
-
-            # Dynamic identification of Column B (Team Number)
-            team_col_name = df_per_team.columns[1] if len(df_per_team.columns) > 1 else df_per_team.columns[0]
-            df_per_team[team_col_name] = df_per_team[team_col_name].astype(str).str.strip()
-
-            # Convert numeric columns
-            for col in df_per_team.columns:
-                if col != team_col_name:
-                    df_per_team[col] = pd.to_numeric(df_per_team[col], errors="coerce").fillna(0)
-        else:
-            df_per_team = pd.DataFrame()
-
-        return df_data, df_per_team
-
-    except Exception as e:
-        st.error(f"Error loading sheets via Service Account: {e}")
-        st.stop()
-
-# Execute Data Load
-df_match_data, df_per_team = load_all_sheets()
-
-# Helper to find column name in DataFrame case-insensitively
-def find_col(df, keyword):
-    for col in df.columns:
-        if keyword.lower() in col.lower():
-            return col
-    return None
-
-team_col_per_team = df_per_team.columns[1] if len(df_per_team.columns) > 1 else (df_per_team.columns[0] if not df_per_team.empty else "")
-team_col_match = find_col(df_match_data, "team") or (df_match_data.columns[0] if not df_match_data.empty else "")
-
-# -----------------------------------------------------------------------------
-# 3. MAIN NAVIGATION
-# -----------------------------------------------------------------------------
-st.title("🤖 FTC Strategy & Scouting Dashboard")
-
-view_mode = st.radio(
-    "Select Dashboard View",
-    ["Tactical Strategy Canvas", "Alliance Match Comparison", "Team Deep-Dive", "Leaderboard & Draft Board", "Playoff Simulator"],
-    horizontal=True
-)
-
-st.divider()
-
-# -----------------------------------------------------------------------------
-# VIEW 1: TACTICAL STRATEGY CANVAS (HTML5/JS Canvas with ftcfield.png)
-# -----------------------------------------------------------------------------
-if view_mode == "Tactical Strategy Canvas":
-    st.subheader("📋 FTC Tactical Strategy Canvas")
-    st.markdown("Draw autonomous routes, defense paths, and position alliance robots directly on the field.")
-
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        st.markdown("### Controls")
-        draw_color = st.color_picker("Drawing Color", "#FF0000")
-        line_width = st.slider("Line Thickness", 1, 12, 4)
-        tool_mode = st.radio("Tool", ["Draw", "Clear Drawings"])
-        st.info("💡 **Tip:** Drag the R1, R2, B1, B2 robot markers anywhere on the canvas to set positions.")
-
-    canvas_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            #canvas-container {{
-                position: relative;
-                width: 700px;
-                height: 700px;
-                background-image: url('{FIELD_IMAGE_B64}');
-                background-size: 100% 100%;
-                background-position: center;
-                background-repeat: no-repeat;
-                border: 3px solid #222;
-                border-radius: 8px;
-                user-select: none;
-                overflow: hidden;
-            }}
-            canvas {{
-                position: absolute;
-                top: 0;
-                left: 0;
-                cursor: crosshair;
-            }}
-            .robot-marker {{
-                position: absolute;
-                width: 42px;
-                height: 42px;
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-                font-family: Arial, sans-serif;
-                font-size: 14px;
-                color: white;
-                cursor: grab;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.6);
-                border: 2.5px solid white;
-                z-index: 10;
-            }}
-            .red-alliance {{ background-color: #E63946; }}
-            .blue-alliance {{ background-color: #1D3557; }}
-        </style>
-    </head>
-    <body>
-        <div id="canvas-container">
-            <canvas id="paintCanvas" width="700" height="700"></canvas>
-            <div class="robot-marker red-alliance" id="r1" style="top: 80px; left: 40px;">R1</div>
-            <div class="robot-marker red-alliance" id="r2" style="top: 160px; left: 40px;">R2</div>
-            <div class="robot-marker blue-alliance" id="b1" style="top: 80px; left: 615px;">B1</div>
-            <div class="robot-marker blue-alliance" id="b2" style="top: 160px; left: 615px;">B2</div>
+    html_content = f"""
+    <div id="controls" style="display:flex; gap:10px; margin:0 auto; max-width:{max_w}; padding:0 0 5px 0;">
+        <button onclick="setMode('move')" style="flex:1; padding:8px; cursor:pointer; background:#4F8BF9; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Move</button>
+        <button onclick="setMode('draw')" style="flex:1; padding:8px; cursor:pointer; background:#2ECC71; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Draw</button>
+        <button onclick="clearCanvas()" style="flex:0.5; padding:8px; cursor:pointer; background:#E74C3C; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Clear</button>
+    </div>
+    <div id="field-viewport" style="width:100%; max-width:{max_w}; margin:0 auto; overflow:hidden; border: 2px solid #555; border-radius: 8px; background:#000; line-height:0;">
+        <div id="field-container" style="position: relative; width: 100%; padding-bottom: {aspect}; height: 0; touch-action: none; margin:0;">
+            <img src="data:image/png;base64,{img_b64}" style="position:absolute; top:0; left:0; width:100%; height:100%; object-fit: contain; pointer-events: none; display:block;">
+            <canvas id="strategy-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; z-index:10; cursor:crosshair; pointer-events:none;"></canvas>
+            {red_bots} {blue_bots}
         </div>
-
-        <script>
-            const canvas = document.getElementById('paintCanvas');
-            const ctx = canvas.getContext('2d');
-            let isDrawing = false;
-            let color = '{draw_color}';
-            let lineWidth = {line_width};
-            let toolMode = '{tool_mode}';
-
-            ctx.strokeStyle = color;
-            ctx.lineWidth = lineWidth;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-
-            canvas.addEventListener('mousedown', (e) => {{
-                if (toolMode === 'Clear Drawings') {{
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    return;
-                }}
-                isDrawing = true;
-                ctx.beginPath();
-                ctx.moveTo(e.offsetX, e.offsetY);
-            }});
-
-            canvas.addEventListener('mousemove', (e) => {{
-                if (isDrawing && toolMode === 'Draw') {{
-                    ctx.lineTo(e.offsetX, e.offsetY);
-                    ctx.stroke();
-                }}
-            }});
-
-            canvas.addEventListener('mouseup', () => isDrawing = false);
-            canvas.addEventListener('mouseleave', () => isDrawing = false);
-
-            // Drag and Drop Logic for Robot Markers
-            const markers = document.querySelectorAll('.robot-marker');
-            markers.forEach(marker => {{
-                marker.addEventListener('mousedown', (e) => {{
-                    let shiftX = e.clientX - marker.getBoundingClientRect().left;
-                    let shiftY = e.clientY - marker.getBoundingClientRect().top;
-
-                    function moveAt(pageX, pageY) {{
-                        const container = document.getElementById('canvas-container').getBoundingClientRect();
-                        let newLeft = pageX - container.left - shiftX;
-                        let newTop = pageY - container.top - shiftY;
-
-                        marker.style.left = newLeft + 'px';
-                        marker.style.top = newTop + 'px';
-                    }}
-
-                    function onMouseMove(event) {{
-                        moveAt(event.pageX, event.pageY);
-                    }}
-
-                    document.addEventListener('mousemove', onMouseMove);
-
-                    document.addEventListener('mouseup', () => {{
-                        document.removeEventListener('mousemove', onMouseMove);
-                    }}, {{ once: true }});
-                }});
-
-                marker.ondragstart = () => false;
-            }});
-        </script>
-    </body>
-    </html>
+    </div>
+    <style>
+        .bot {{ position: absolute; width: 38px; height: 38px; border-radius: 50%; color: white; font-family: sans-serif; font-weight: bold; font-size: 10px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 4px 8px black; cursor: grab; z-index: 20; touch-action: none; transform: translate(-50%, -50%); }}
+        .bot:active {{ cursor: grabbing; }} .red {{ background: #FF4B4B; }} .blue {{ background: #1F77B4; }}
+    </style>
+    <script>
+        const canvas = document.getElementById('strategy-canvas'); const ctx = canvas.getContext('2d');
+        const container = document.getElementById('field-container'); const bots = document.querySelectorAll('.bot');
+        let mode = 'move'; let drawing = false;
+        function setMode(m) {{ mode = m; canvas.style.pointerEvents = (m === 'draw' ? 'auto' : 'none'); }}
+        function clearCanvas() {{ ctx.clearRect(0, 0, canvas.width, canvas.height); }}
+        function resize() {{ canvas.width = container.clientWidth; canvas.height = container.clientHeight; }}
+        window.onload = resize; window.onresize = resize; setTimeout(resize, 100);
+        function getPos(e) {{
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {{ x: clientX - rect.left, y: clientY - rect.top }};
+        }}
+        canvas.addEventListener('mousedown', e => {{ if(mode==='draw') {{ drawing=true; const p=getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }} }});
+        canvas.addEventListener('mousemove', e => {{ if(drawing && mode==='draw') {{ const p=getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }});
+        canvas.addEventListener('mouseup', () => drawing=false);
+        canvas.addEventListener('touchstart', e => {{ if(mode==='draw') {{ drawing=true; const p=getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }} }}, {{passive:false}});
+        canvas.addEventListener('touchmove', e => {{ if(drawing && mode==='draw') {{ const p=getPos(e); ctx.lineTo(p.x, p.y); ctx.strokeStyle='#2ECC71'; ctx.lineWidth=4; ctx.stroke(); }} }}, {{passive:false}});
+        canvas.addEventListener('touchend', () => drawing=false);
+        bots.forEach(bot => {{
+            let isDragging = false;
+            const move = (e) => {{
+                if (!isDragging) return; const evt = e.touches ? e.touches[0] : e;
+                const rect = container.getBoundingClientRect();
+                bot.style.left = ((evt.clientX - rect.left) / rect.width * 100) + '%';
+                bot.style.top = ((evt.clientY - rect.top) / rect.height * 100) + '%';
+                if(e.touches) e.preventDefault();
+            }};
+            bot.addEventListener('mousedown', () => {{ if(mode==='move') isDragging = true; }});
+            bot.addEventListener('touchstart', () => {{ if(mode==='move') isDragging = true; }}, {{passive:false}});
+            document.addEventListener('mousemove', move); document.addEventListener('touchmove', move, {{passive:false}});
+            document.addEventListener('mouseup', () => isDragging = false); document.addEventListener('touchend', () => isDragging = false);
+        }});
+    </script>
     """
+    # Optimized heights for tablets to prevent large gaps below the component
+    st.components.v1.html(html_content, height=590 if width_mode == "FTC" else 360)
 
-    with col2:
-        st.components.v1.html(canvas_html, height=730)
+# --- 3. VIEW LOGIC ---
+with st.sidebar:
+    st.divider()
+    if view in ["🗺️ Field Map", "📊 Overview"]:
+        m_list = sorted(schema_df['match_number'].unique().astype(int))
+        st.session_state.m_sel_val = st.selectbox("Select Match", m_list, index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0)
+    if st.button("🔄 Sync Data", use_container_width=True): st.cache_data.clear(); st.rerun()
 
-# -----------------------------------------------------------------------------
-# VIEW 2: ALLIANCE MATCH COMPARISON
-# -----------------------------------------------------------------------------
-elif view_mode == "Alliance Match Comparison":
-    st.subheader("⚔️ Alliance Comparison & Match Predictor")
-
-    if df_per_team.empty:
-        st.warning("No team data found in 'Per_Team' sheet.")
-    else:
-        teams_list = sorted(df_per_team[team_col_per_team].unique())
-
-        c1, c2 = st.columns(2)
+if view == "🗺️ Field Map":
+    m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
+    r_keys = [c for c in ['red1','red2','red3'] if c in m_row.index and pd.notna(m_row[c])]
+    b_keys = [c for c in ['blue1','blue2','blue3'] if c in m_row.index and pd.notna(m_row[c])]
+    rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
+    
+    if st.session_state.comp_mode == "FTC":
+        c1, c2, c3 = st.columns([1.2, 3.5, 1.2])
         with c1:
-            st.markdown("### 🔴 Red Alliance")
-            r1 = st.selectbox("Red Team 1", teams_list, index=0)
-            r2 = st.selectbox("Red Team 2", teams_list, index=min(1, len(teams_list)-1))
+            st.markdown("<div style='text-align:center; color:#FF4B4B; font-weight:bold; margin-bottom:5px;'>RED</div>", unsafe_allow_html=True)
+            for t in rt: detailed_card(t, "#FF4B4B")
         with c2:
-            st.markdown("### 🔵 Blue Alliance")
-            b1 = st.selectbox("Blue Team 1", teams_list, index=min(2, len(teams_list)-1))
-            b2 = st.selectbox("Blue Team 2", teams_list, index=min(3, len(teams_list)-1))
-
-        red_teams = [r1, r2]
-        blue_teams = [b1, b2]
-
-        # Extract rows from Per_Team
-        red_stats = df_per_team[df_per_team[team_col_per_team].isin(red_teams)]
-        blue_stats = df_per_team[df_per_team[team_col_per_team].isin(blue_teams)]
-
-        numeric_cols = df_per_team.select_dtypes(include=[np.number]).columns
-
-        red_sums = red_stats[numeric_cols].sum()
-        blue_sums = blue_stats[numeric_cols].sum()
-
-        st.divider()
-        st.markdown("### Summary Statistics Comparison")
-
-        comp_data = []
-        for col in numeric_cols:
-            comp_data.append({
-                "Metric": col,
-                "Red Alliance": red_sums.get(col, 0),
-                "Blue Alliance": blue_sums.get(col, 0)
-            })
-
-        df_comp = pd.DataFrame(comp_data)
-
-        fig = px.bar(
-            df_comp,
-            x="Metric",
-            y=["Red Alliance", "Blue Alliance"],
-            barmode="group",
-            color_discrete_sequence=["#E63946", "#1D3557"],
-            title="Alliance Totals by Metric"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-# -----------------------------------------------------------------------------
-# VIEW 3: TEAM DEEP-DIVE
-# -----------------------------------------------------------------------------
-elif view_mode == "Team Deep-Dive":
-    st.subheader("🔍 Individual Team Performance")
-
-    if df_per_team.empty:
-        st.warning("No data found in 'Per_Team' sheet.")
+            render_field_interactive(rt, bt, st.session_state.m_sel_val, 0, 0, width_mode="FTC")
+            st.markdown(f"<div style='text-align:center; font-weight:bold; color:#BDC3C7; margin-top:-10px;'>MATCH {st.session_state.m_sel_val}</div>", unsafe_allow_html=True)
+        with c3:
+            st.markdown("<div style='text-align:center; color:#1F77B4; font-weight:bold; margin-bottom:5px;'>BLUE</div>", unsafe_allow_html=True)
+            for t in bt: detailed_card(t, "#1F77B4")
     else:
-        teams_list = sorted(df_per_team[team_col_per_team].unique())
-        selected_team = st.selectbox("Select Team Number", teams_list)
+        rc = st.columns(len(rt))
+        for i, t in enumerate(rt):
+            with rc[i]: detailed_card(t, "#FF4B4B")
+        f_l, f_m, f_r = st.columns([0.7, 4.6, 0.7])
+        with f_l: st.markdown(f'<div class="field-side-label"><div class="side-big">{st.session_state.m_sel_val}</div><div class="side-small">MATCH</div></div>', unsafe_allow_html=True)
+        with f_m: render_field_interactive(rt, bt, st.session_state.m_sel_val, 0, 0, width_mode="FRC")
+        with f_r: st.markdown(f'<div class="field-side-label"><div style="color:#FF4B4B; font-size:10px;">RED</div><div style="font-size:24px; font-weight:900;">{round(sum(get_team_stats(t)["avg"] for t in rt),1)}</div><div style="height:10px;"></div><div style="color:#1F77B4; font-size:10px;">BLUE</div><div style="font-size:24px; font-weight:900;">{round(sum(get_team_stats(t)["avg"] for t in bt),1)}</div></div>', unsafe_allow_html=True)
+        bc = st.columns(len(bt))
+        for i, t in enumerate(bt):
+            with bc[i]: detailed_card(t, "#1F77B4")
 
-        # Overview from Per_Team
-        team_summary = df_per_team[df_per_team[team_col_per_team] == selected_team]
-        st.markdown("#### 📊 Overall Team Aggregates (from `Per_Team` sheet)")
-        st.dataframe(team_summary, use_container_width=True)
+elif view == "🤖 per team":
+    t_list = sorted(set(df['Team Number'].unique()))
+    sel_t = st.selectbox("🔍 Select Team", t_list)
+    stats = get_team_stats(sel_t)
+    t_name = ""
+    if st.session_state.comp_mode == "FRC" and not pit_df.empty:
+        p_row = pit_df[pit_df['team_number'] == sel_t]
+        for col in ['team_name', 'Team Name', 'Name']:
+            if col in p_row.columns and not p_row.empty:
+                t_name = f"- {p_row[col].iloc[0]}"; break
+    st.title(f"Team {sel_t} {t_name}")
+    m = st.columns(4); m[0].metric("Avg Score", round(stats['avg'],1)); m[1].metric("Climb", stats['climb_pref']); m[2].metric("Skill", round(stats['driver'],1)); m[3].metric("Samples", stats['count'])
+    st.divider(); l, r = st.columns([2, 1.2])
+    with l:
+        merged = df[df['Team Number'] == sel_t].copy()
+        merged['X'] = merged['Match Number'].apply(lambda x: f"M{int(x)}")
+        st.plotly_chart(px.line(merged.sort_values('Match Number'), x="X", y="Total Score", markers=True, template="plotly_dark", height=300), use_container_width=True)
+        st.table(df[df['Team Number'] == sel_t].dropna(subset=['Comments'])[['Match Number', 'Comments']].sort_values('Match Number', ascending=False))
+    with r:
+        if stats['died'] > 0: st.error(f"⚠️ Team Died/Tipped in {stats['died']} matches!")
+        if st.session_state.comp_mode == "FRC" and not pit_df.empty:
+            p_row = pit_df[pit_df['team_number'] == sel_t]
+            if not p_row.empty: st.subheader("🛠️ Pit Specifications"); st.dataframe(p_row.T, use_container_width=True)
 
-        # Detailed Match History from Data sheet
-        st.divider()
-        st.markdown("#### 📝 Match History Breakdown (from `Data` sheet)")
-        if not df_match_data.empty and team_col_match:
-            team_matches = df_match_data[df_match_data[team_col_match] == selected_team]
-            if not team_matches.empty:
-                st.dataframe(team_matches, use_container_width=True)
-            else:
-                st.info(f"No specific match records found for Team {selected_team} in 'Data' sheet.")
+elif view == "🤝 Alliance Selection":
+    st.title("🤝 Draft Board")
+    if st.session_state.active_team_selection:
+        st.markdown(f'<div class="staging-area"><h3>Team {st.session_state.active_team_selection} SELECTED</h3></div>', unsafe_allow_html=True)
+        if st.button("Cancel"): st.session_state.active_team_selection = None; st.rerun()
+    col_l, col_r = st.columns([1.2, 2.5])
+    with col_l:
+        st.subheader("📋 Teams")
+        t_data = pd.DataFrame([{"t": t, **get_team_stats(t)} for t in sorted(set(df['Team Number'].unique()))]).sort_values('avg', ascending=False)
+        for _, tr in t_data.iterrows():
+            t_num = int(tr['t'])
+            if st.button(f"{t_num} (Avg: {round(tr['avg'],1)})", key=f"sel_{t_num}", use_container_width=True):
+                st.session_state.active_team_selection = t_num; st.rerun()
+    with col_r:
+        grid, slots = st.columns(2), [("Capt","c"),("Pick 1","p1")]
+        if st.session_state.comp_mode == "FRC": slots.append(("Pick 2","p2"))
+        for i in range(1, 9):
+            with grid[(i-1)%2]:
+                with st.container(border=True):
+                    st.markdown(f"**Alliance {i}**")
+                    for label, key in slots:
+                        curr = st.session_state.alliances_state[i][key]
+                        if st.button(f"{label}: {curr if curr > 0 else 'empty'}", key=f"a{i}{key}", use_container_width=True):
+                            if st.session_state.active_team_selection:
+                                st.session_state.alliances_state[i][key] = st.session_state.active_team_selection
+                                st.session_state.active_team_selection = None; st.rerun()
+                            else: st.session_state.alliances_state[i][key] = 0; st.rerun()
 
-# -----------------------------------------------------------------------------
-# VIEW 4: LEADERBOARD & DRAFT BOARD
-# -----------------------------------------------------------------------------
-elif view_mode == "Leaderboard & Draft Board":
-    st.subheader("📊 Team Leaderboard & Pick List (`Per_Team` Sheet)")
+elif view == "📊 Overview":
+    m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
+    r_keys, b_keys = [c for c in ['red1','red2','red3'] if c in m_row.index and pd.notna(m_row[c])], [c for c in ['blue1','blue2','blue3'] if c in m_row.index and pd.notna(m_row[c])]
+    rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
+    st.title(f"Overview - Match {st.session_state.m_sel_val}")
+    o1, o2 = st.columns(2)
+    with o1:
+        st.subheader("🔴 Red Alliance")
+        for t in rt: detailed_card(t, "#FF4B4B")
+    with o2:
+        st.subheader("🔵 Blue Alliance")
+        for t in bt: detailed_card(t, "#1F77B4")
 
-    if df_per_team.empty:
-        st.warning("No data found in 'Per_Team' sheet.")
+elif view == "🏆 Playoffs":
+    st.title(f"🏆 {st.session_state.comp_mode} Playoffs")
+    a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
+    p_slots = [c for c in ['C', '1e', '2e'] if c in alliance_df.columns]
+    c_sel1, c_sel2 = st.columns(2)
+    with c_sel1:
+        r_choice = st.selectbox("🔴 Red Alliance", a_names, index=0)
+        r_row = alliance_df.iloc[a_names.index(r_choice)]
+        r_roster = [int(r_row[k]) for k in p_slots if pd.notna(r_row[k])]
+        if '3e' in r_row and pd.notna(r_row['3e']):
+            swap_r = st.toggle("Use Red Backup?", value=st.session_state.playoff_red_swap)
+            if swap_r:
+                out_r = st.selectbox("Red to sit out", r_roster, index=r_roster.index(st.session_state.playoff_red_out) if st.session_state.playoff_red_out in r_roster else 0)
+                st.session_state.playoff_red_out = out_r
+                r_roster = [int(r_row['3e']) if x == out_r else x for x in r_roster]
+    with c_sel2:
+        b_choice = st.selectbox("🔵 Blue Alliance", a_names, index=min(1, len(a_names)-1))
+        b_row = alliance_df.iloc[a_names.index(b_choice)]
+        b_roster = [int(b_row[k]) for k in p_slots if pd.notna(b_row[k])]
+        if '3e' in b_row and pd.notna(b_row['3e']):
+            swap_b = st.toggle("Use Blue Backup?", value=st.session_state.playoff_blue_swap)
+            if swap_b:
+                out_b = st.selectbox("Blue to sit out", b_roster, index=b_roster.index(st.session_state.playoff_blue_out) if st.session_state.playoff_blue_out in b_roster else 0)
+                st.session_state.playoff_blue_out = out_b
+                b_roster = [int(b_row['3e']) if x == out_b else x for x in b_roster]
+
+    r_score, b_score = sum(get_team_stats(t)['avg'] for t in r_roster), sum(get_team_stats(t)['avg'] for t in b_roster)
+    if st.session_state.comp_mode == "FTC":
+        c1, c2, c3 = st.columns([1.2, 3.5, 1.2])
+        with c1:
+            for t in r_roster: detailed_card(t, "#FF4B4B")
+        with c2: render_field_interactive(r_roster, b_roster, "PLAYOFF", r_score, b_score, width_mode="FTC")
+        with c3:
+            for t in b_roster: detailed_card(t, "#1F77B4")
     else:
-        numeric_cols = list(df_per_team.select_dtypes(include=[np.number]).columns)
-        
-        if numeric_cols:
-            sort_metric = st.selectbox("Sort Leaderboard By", numeric_cols, index=0)
-            sorted_df = df_per_team.sort_values(by=sort_metric, ascending=False).reset_index(drop=True)
-            
-            st.dataframe(
-                sorted_df.style.highlight_max(axis=0, color="#d4edda"),
-                use_container_width=True
-            )
-        else:
-            st.dataframe(df_per_team, use_container_width=True)
-
-# -----------------------------------------------------------------------------
-# VIEW 5: PLAYOFF SIMULATOR
-# -----------------------------------------------------------------------------
-elif view_mode == "Playoff Simulator":
-    st.subheader("🏆 Alliance Playoff Simulator")
-
-    if df_per_team.empty:
-        st.warning("No team data found in 'Per_Team' sheet.")
-    else:
-        teams_list = sorted(df_per_team[team_col_per_team].unique())
-        numeric_cols = list(df_per_team.select_dtypes(include=[np.number]).columns)
-
-        if not numeric_cols:
-            st.error("No numeric columns found in 'Per_Team' sheet to run simulation.")
-        else:
-            score_col = st.selectbox("Select Metric for Match Simulation", numeric_cols)
-
-            col_a, col_b = st.columns(2)
-            with col_a:
-                a1 = st.selectbox("Alliance 1 - Captain", teams_list, index=0)
-                a2 = st.selectbox("Alliance 1 - Pick 1", teams_list, index=min(1, len(teams_list)-1))
-
-            with col_b:
-                b1 = st.selectbox("Alliance 2 - Captain", teams_list, index=min(2, len(teams_list)-1))
-                b2 = st.selectbox("Alliance 2 - Pick 1", teams_list, index=min(3, len(teams_list)-1))
-
-            if st.button("🚀 Run Simulation"):
-                val_a1 = df_per_team[df_per_team[team_col_per_team] == a1][score_col].values[0]
-                val_a2 = df_per_team[df_per_team[team_col_per_team] == a2][score_col].values[0]
-                val_b1 = df_per_team[df_per_team[team_col_per_team] == b1][score_col].values[0]
-                val_b2 = df_per_team[df_per_team[team_col_per_team] == b2][score_col].values[0]
-
-                score_a = val_a1 + val_a2
-                score_b = val_b1 + val_b2
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Alliance 1 Total", f"{score_a:.1f}")
-                m2.metric("Alliance 2 Total", f"{score_b:.1f}")
-
-                diff = score_a - score_b
-                m3.metric("Projected Margin", f"{abs(diff):.1f}", delta=f"{'Alliance 1' if diff > 0 else 'Alliance 2'} Advantage")
+        rc = st.columns(len(r_roster))
+        for i, t in enumerate(r_roster):
+            with rc[i]: detailed_card(t, "#FF4B4B")
+        render_field_interactive(r_roster, b_roster, "PLAYOFF", r_score, b_score, width_mode="FRC")
+        bc = st.columns(len(b_roster))
+        for i, t in enumerate(b_roster):
+            with bc[i]: detailed_card(t, "#1F77B4")
