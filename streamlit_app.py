@@ -299,6 +299,33 @@ if st.session_state.nav_view in ["🗺️ Field Map", "📊 Overview"]:
             index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0
         )
 
+# --- Safe Match Filtering ---
+if schema_df is not None and not schema_df.empty:
+    # Safely find which column represents the match number in schema_df
+    m_col = None
+    for candidate in ['match_number', 'match number', 'match', 'm_num', 'm']:
+        if candidate in schema_df.columns:
+            m_col = candidate
+            break
+
+    # If no matching column was found, pick the first column
+    if m_col is None and len(schema_df.columns) > 0:
+        m_col = schema_df.columns[0]
+
+    # Check if selected match exists in the schema DataFrame
+    if m_col and m_col in schema_df.columns:
+        # Convert selected value and column values to string for safe comparison
+        match_matches = schema_df[schema_df[m_col].astype(str) == str(st.session_state.m_sel_val)]
+        
+        if not match_matches.empty:
+            m_row = match_matches.iloc[0]
+        else:
+            m_row = None
+    else:
+            m_row = None
+else:
+    m_row = None
+
 # --- VIEW ROUTING ---
 view = st.session_state.nav_view
 
