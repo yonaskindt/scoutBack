@@ -5,3 +5,4 @@ plotly
 statbotics
 google-auth
 streamlit-autorefresh
+gspread
