@@ -3,9 +3,85 @@ import pandas as pd
 import plotly.express as px
 import os
 import base64
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="FTC Scouting Hub", layout="wide", initial_sidebar_state="collapsed")
+
+# --- SPREADSHEET CONFIGURATION ---
+SHEET_ID = "1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY"  # Replace with your actual Google Sheet ID
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+# --- DATA FETCHING WITH CACHING ---
+@st.cache_data(ttl=30)
+def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
+    """Fetch and standardize data from a Google Sheet tab using Streamlit secrets."""
+    if "gcp_service_account" not in st.secrets:
+        st.error("Missing `gcp_service_account` in Streamlit secrets.")
+        return pd.DataFrame()
+
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+        client = gspread.authorize(creds)
+
+        sheet = client.open_by_key(sheet_id)
+        worksheet = sheet.worksheet(tab_name)
+        records = worksheet.get_all_records()
+
+        if not records:
+            return pd.DataFrame()
+
+        df_out = pd.DataFrame(records)
+        df_out.columns = [str(c).strip().lower() for c in df_out.columns]
+        return df_out
+
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"Worksheet '{tab_name}' not found.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error fetching '{tab_name}': {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=30)
+def load_all_ftc_data():
+    """Loads all worksheets and preprocesses fields for application logic."""
+    data = get_google_data(SHEET_ID, "Data_Input")
+    schema = get_google_data(SHEET_ID, "Matches")
+    ali = get_google_data(SHEET_ID, "Alliances")
+
+    if data.empty or schema.empty:
+        return None, None, None
+
+    # Process Numeric Scoring Columns
+    for col in ['+1', '+3', '+5', 'amount in hub']:
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
+
+    score_cols = [c for c in ['+1', '+3', '+5'] if c in data.columns]
+    data['total score'] = data[score_cols].sum(axis=1) if score_cols else 0
+
+    # Clean boolean flags
+    def clean_bool(val):
+        return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
+
+    for col in ['moved?', 'died?', 'tipped/fell over?', 'defence/ to other side']:
+        if col in data.columns:
+            clean_key = col.replace('?', '').split('/')[0].strip() + '_num'
+            data[clean_key] = data[col].apply(clean_bool)
+
+    return data, schema, ali
+
+# Load data into session memory
+df, schema_df, alliance_df = load_all_ftc_data()
+
+if df is None:
+    st.error("Failed to load FTC Data. Check your Google Sheet ID, tab names, and credentials.")
+    st.stop()
 
 # --- INITIALIZE SESSION STATE ---
 if 'nav_view' not in st.session_state:
@@ -20,24 +96,18 @@ if 'm_sel_val' not in st.session_state:
 if 'active_team_selection' not in st.session_state:
     st.session_state.active_team_selection = None
 
-# Persistence for Playoff Swaps
 if 'playoff_red_swap' not in st.session_state: st.session_state.playoff_red_swap = False
 if 'playoff_blue_swap' not in st.session_state: st.session_state.playoff_blue_swap = False
 if 'playoff_red_out' not in st.session_state: st.session_state.playoff_red_out = None
 if 'playoff_blue_out' not in st.session_state: st.session_state.playoff_blue_out = None
 
-# --- TABLET & BOTTOM NAV CUSTOM CSS ---
+# --- CUSTOM CSS ---
 st.markdown("""
     <style>
-    /* Hide standard Streamlit sidebar and extra margins */
     [data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
-    .main .block-container { 
-        max-width: 100%; 
-        padding: 0.5rem 0.8rem 6rem 0.8rem; /* Padding bottom leaves room for fixed bottom bar */
-    }
+    .main .block-container { max-width: 100%; padding: 0.5rem 0.8rem 6rem 0.8rem; }
     
-    /* Responsive Cards */
     .team-info-box-detailed { 
         padding: 8px; 
         border-radius: 8px; 
@@ -67,7 +137,6 @@ st.markdown("""
         text-align: center; 
     }
 
-    /* Fixed Bottom Navigation Dock */
     .bottom-nav-container {
         position: fixed;
         bottom: 0;
@@ -80,11 +149,9 @@ st.markdown("""
         box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
     }
     
-    /* Clean up HTML component padding */
     [data-testid="stHtml"] { padding: 0 !important; margin: 0 !important; }
     iframe { display: block; margin: 0 auto; border: none; overflow: hidden; }
 
-    /* Tablet Optimizations (Screen width up to 1024px) */
     @media (max-width: 1024px) {
         .team-info-box-detailed { font-size: 11px; }
         .note-text { font-size: 10px; height: 30px; }
@@ -93,64 +160,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- DATA LOADING ---
-@st.cache_data
-def load_ftc_data():
-    file_name = "scouting_data_ftc.xlsx"
-    if not os.path.exists(file_name): 
-        return None, None, None
-    try:
-        schema = pd.read_excel(file_name, sheet_name="Matches", header=0)
-        data = pd.read_excel(file_name, sheet_name="Data_Input")
-        ali = pd.read_excel(file_name, sheet_name="Alliances")
-        
-        for d in [schema, data, ali]: 
-            if not d.empty:
-                d.columns = d.columns.str.strip()
-                d.dropna(how='all', axis=1, inplace=True)
-                
-        for col in ['+1', '+3', '+5', 'Amount in Hub']:
-            if col in data.columns: 
-                data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
-            
-        score_cols = [c for c in ['+1', '+3', '+5'] if c in data.columns]
-        data['Total Score'] = data[score_cols].sum(axis=1) if score_cols else 0
-        
-        def clean_bool(val): 
-            return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
-            
-        for col in ['Moved?', 'Died?', 'Tipped/Fell Over?', 'Defence/ to other side']:
-            if col in data.columns: 
-                data[col.replace('?','').split('/')[0]+'_Num'] = data[col].apply(clean_bool)
-            
-        return data, schema, ali
-    except Exception: 
-        return None, None, None
-
-df, schema_df, alliance_df = load_ftc_data()
-
-if df is None:
-    st.error("Missing `scouting_data_ftc.xlsx` file or invalid format.")
-    st.stop()
-
-# --- HELPERS ---
+# --- HELPER FUNCTIONS ---
 def get_team_stats(team_num):
     if team_num == 0: 
         return {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "died": 0, "warn": False}
-    t_data = df[df['Team Number'] == team_num]
+    
+    t_data = df[df['team number'] == team_num] if 'team number' in df.columns else pd.DataFrame()
     stat_dict = {"avg": 0, "count": 0, "climb_pref": "N/A", "last_note": "No notes", "driver": 0, "warn": False}
+    
     if not t_data.empty:
-        stat_dict.update({"avg": t_data['Total Score'].mean(), "count": len(t_data)})
-        if 'Climbing' in t_data: 
-            stat_dict["climb_pref"] = t_data['Climbing'].dropna().mode().iloc[0] if not t_data['Climbing'].dropna().empty else "N/A"
+        stat_dict.update({"avg": t_data['total score'].mean(), "count": len(t_data)})
+        if 'climbing' in t_data: 
+            stat_dict["climb_pref"] = t_data['climbing'].dropna().mode().iloc[0] if not t_data['climbing'].dropna().empty else "N/A"
         if 'driver skill' in t_data: 
-            stat_dict["driver"] = t_data['driver skill'].mean()
-        note_s = t_data.dropna(subset=['Comments'])
-        if not note_s.empty: 
-            stat_dict['last_note'] = str(note_s.iloc[-1]['Comments'])
-        died_sum = (t_data['Died_Num'].sum() if 'Died_Num' in t_data else 0) + (t_data['Tipped_Num'].sum() if 'Tipped_Num' in t_data else 0)
+            stat_dict["driver"] = pd.to_numeric(t_data['driver skill'], errors='coerce').fillna(0).mean()
+        if 'comments' in t_data:
+            note_s = t_data.dropna(subset=['comments'])
+            if not note_s.empty: 
+                stat_dict['last_note'] = str(note_s.iloc[-1]['comments'])
+        
+        died_sum = (t_data['died_num'].sum() if 'died_num' in t_data else 0) + (t_data['tipped_num'].sum() if 'tipped_num' in t_data else 0)
         stat_dict['died'] = int(died_sum)
         stat_dict['warn'] = (died_sum / len(t_data)) > 0.2 if len(t_data) > 0 else False
+        
     return stat_dict
 
 def detailed_card(team_num, color_hex):
@@ -229,20 +261,24 @@ def render_field_interactive(red_teams, blue_teams):
     """
     st.components.v1.html(html_content, height=540)
 
-# --- TOP MATCH SELECTOR (IF IN MATCH VIEWS) ---
+# --- TOP MATCH SELECTOR ---
 if st.session_state.nav_view in ["🗺️ Field Map", "📊 Overview"]:
-    m_list = sorted(schema_df['match_number'].unique().astype(int))
-    st.session_state.m_sel_val = st.selectbox(
-        "Select Match Number", 
-        m_list, 
-        index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0
-    )
+    m_col = 'match_number' if 'match_number' in schema_df.columns else 'match number'
+    if m_col in schema_df.columns:
+        m_list = sorted(schema_df[m_col].dropna().unique().astype(int))
+        st.session_state.m_sel_val = st.selectbox(
+            "Select Match Number", 
+            m_list, 
+            index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0
+        )
 
-# --- MAIN CONTENT VIEW ROUTING ---
+# --- VIEW ROUTING ---
 view = st.session_state.nav_view
 
 if view == "🗺️ Field Map":
-    m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
+    m_col = 'match_number' if 'match_number' in schema_df.columns else 'match number'
+    m_row = schema_df[schema_df[m_col] == st.session_state.m_sel_val].iloc[0]
+    
     r_keys = [c for c in ['red1','red2'] if c in m_row.index and pd.notna(m_row[c])]
     b_keys = [c for c in ['blue1','blue2'] if c in m_row.index and pd.notna(m_row[c])]
     rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
@@ -259,7 +295,7 @@ if view == "🗺️ Field Map":
         for t in bt: detailed_card(t, "#1F77B4")
 
 elif view == "🤖 per team":
-    t_list = sorted(set(df['Team Number'].unique()))
+    t_list = sorted(set(df['team number'].dropna().unique()))
     sel_t = st.selectbox("🔍 Select Team", t_list)
     stats = get_team_stats(sel_t)
     
@@ -273,10 +309,12 @@ elif view == "🤖 per team":
     st.divider()
     l, r = st.columns([2, 1.2])
     with l:
-        merged = df[df['Team Number'] == sel_t].copy()
-        merged['X'] = merged['Match Number'].apply(lambda x: f"M{int(x)}")
-        st.plotly_chart(px.line(merged.sort_values('Match Number'), x="X", y="Total Score", markers=True, template="plotly_dark", height=280), use_container_width=True)
-        st.table(df[df['Team Number'] == sel_t].dropna(subset=['Comments'])[['Match Number', 'Comments']].sort_values('Match Number', ascending=False))
+        merged = df[df['team number'] == sel_t].copy()
+        m_col = 'match number' if 'match number' in merged.columns else 'match_number'
+        merged['X'] = merged[m_col].apply(lambda x: f"M{int(x)}")
+        st.plotly_chart(px.line(merged.sort_values(m_col), x="X", y="total score", markers=True, template="plotly_dark", height=280), use_container_width=True)
+        if 'comments' in merged.columns:
+            st.table(merged.dropna(subset=['comments'])[[m_col, 'comments']].sort_values(m_col, ascending=False))
     with r:
         if stats['died'] > 0: 
             st.error(f"⚠️ Team Died/Tipped in {stats['died']} matches!")
@@ -292,7 +330,7 @@ elif view == "🤝 Alliance Selection":
     col_l, col_r = st.columns([1.2, 2.5])
     with col_l:
         st.subheader("📋 Teams")
-        t_data = pd.DataFrame([{"t": t, **get_team_stats(t)} for t in sorted(set(df['Team Number'].unique()))]).sort_values('avg', ascending=False)
+        t_data = pd.DataFrame([{"t": t, **get_team_stats(t)} for t in sorted(set(df['team number'].unique()))]).sort_values('avg', ascending=False)
         for _, tr in t_data.iterrows():
             t_num = int(tr['t'])
             if st.button(f"{t_num} (Avg: {round(tr['avg'], 1)})", key=f"sel_{t_num}", use_container_width=True):
@@ -318,7 +356,8 @@ elif view == "🤝 Alliance Selection":
                                 st.rerun()
 
 elif view == "📊 Overview":
-    m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
+    m_col = 'match_number' if 'match_number' in schema_df.columns else 'match number'
+    m_row = schema_df[schema_df[m_col] == st.session_state.m_sel_val].iloc[0]
     r_keys = [c for c in ['red1','red2'] if c in m_row.index and pd.notna(m_row[c])]
     b_keys = [c for c in ['blue1','blue2'] if c in m_row.index and pd.notna(m_row[c])]
     rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
@@ -334,41 +373,42 @@ elif view == "📊 Overview":
 
 elif view == "🏆 Playoffs":
     st.title("🏆 FTC Playoffs")
-    a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
-    p_slots = [c for c in ['C', '1e'] if c in alliance_df.columns]
-    
-    c_sel1, c_sel2 = st.columns(2)
-    with c_sel1:
-        r_choice = st.selectbox("🔴 Red Alliance", a_names, index=0)
-        r_row = alliance_df.iloc[a_names.index(r_choice)]
-        r_roster = [int(r_row[k]) for k in p_slots if pd.notna(r_row[k])]
-        if '2e' in r_row and pd.notna(r_row['2e']):
-            swap_r = st.toggle("Use Red Backup?", key="playoff_red_swap")
-            if swap_r:
-                out_r = st.selectbox("Red to sit out", r_roster, index=r_roster.index(st.session_state.playoff_red_out) if st.session_state.playoff_red_out in r_roster else 0)
-                st.session_state.playoff_red_out = out_r
-                r_roster = [int(r_row['2e']) if x == out_r else x for x in r_roster]
-                
-    with c_sel2:
-        b_choice = st.selectbox("🔵 Blue Alliance", a_names, index=min(1, len(a_names)-1))
-        b_row = alliance_df.iloc[a_names.index(b_choice)]
-        b_roster = [int(b_row[k]) for k in p_slots if pd.notna(b_row[k])]
-        if '2e' in b_row and pd.notna(b_row['2e']):
-            swap_b = st.toggle("Use Blue Backup?", key="playoff_blue_swap")
-            if swap_b:
-                out_b = st.selectbox("Blue to sit out", b_roster, index=b_roster.index(st.session_state.playoff_blue_out) if st.session_state.playoff_blue_out in b_roster else 0)
-                st.session_state.playoff_blue_out = out_b
-                b_roster = [int(b_row['2e']) if x == out_b else x for x in b_roster]
+    if not alliance_df.empty:
+        a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
+        p_slots = [c for c in ['c', '1e'] if c in alliance_df.columns]
+        
+        c_sel1, c_sel2 = st.columns(2)
+        with c_sel1:
+            r_choice = st.selectbox("🔴 Red Alliance", a_names, index=0)
+            r_row = alliance_df.iloc[a_names.index(r_choice)]
+            r_roster = [int(r_row[k]) for k in p_slots if pd.notna(r_row[k])]
+            if '2e' in r_row and pd.notna(r_row['2e']):
+                swap_r = st.toggle("Use Red Backup?", key="playoff_red_swap")
+                if swap_r:
+                    out_r = st.selectbox("Red to sit out", r_roster, index=r_roster.index(st.session_state.playoff_red_out) if st.session_state.playoff_red_out in r_roster else 0)
+                    st.session_state.playoff_red_out = out_r
+                    r_roster = [int(r_row['2e']) if x == out_r else x for x in r_roster]
+                    
+        with c_sel2:
+            b_choice = st.selectbox("🔵 Blue Alliance", a_names, index=min(1, len(a_names)-1))
+            b_row = alliance_df.iloc[a_names.index(b_choice)]
+            b_roster = [int(b_row[k]) for k in p_slots if pd.notna(b_row[k])]
+            if '2e' in b_row and pd.notna(b_row['2e']):
+                swap_b = st.toggle("Use Blue Backup?", key="playoff_blue_swap")
+                if swap_b:
+                    out_b = st.selectbox("Blue to sit out", b_roster, index=b_roster.index(st.session_state.playoff_blue_out) if st.session_state.playoff_blue_out in b_roster else 0)
+                    st.session_state.playoff_blue_out = out_b
+                    b_roster = [int(b_row['2e']) if x == out_b else x for x in b_roster]
 
-    c1, c2, c3 = st.columns([1.2, 3.2, 1.2])
-    with c1:
-        for t in r_roster: detailed_card(t, "#FF4B4B")
-    with c2: 
-        render_field_interactive(r_roster, b_roster)
-    with c3:
-        for t in b_roster: detailed_card(t, "#1F77B4")
+        c1, c2, c3 = st.columns([1.2, 3.2, 1.2])
+        with c1:
+            for t in r_roster: detailed_card(t, "#FF4B4B")
+        with c2: 
+            render_field_interactive(r_roster, b_roster)
+        with c3:
+            for t in b_roster: detailed_card(t, "#1F77B4")
 
-# --- FIXED BOTTOM NAVIGATION BAR DOCK ---
+# --- FIXED BOTTOM NAVIGATION DOCK ---
 st.markdown('<div class="bottom-nav-container">', unsafe_allow_html=True)
 b_col1, b_col2, b_col3, b_col4, b_col5, b_col6 = st.columns([1, 1, 1, 1, 1, 0.8])
 
