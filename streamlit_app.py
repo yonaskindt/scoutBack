@@ -5,9 +5,12 @@ import os
 import base64
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="FTC Scouting Hub", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="FTC Scouting Hub", layout="wide", initial_sidebar_state="collapsed")
 
 # --- INITIALIZE SESSION STATE ---
+if 'nav_view' not in st.session_state:
+    st.session_state.nav_view = "🗺️ Field Map"
+
 if 'alliances_state' not in st.session_state:
     st.session_state.alliances_state = {i: {"c": 0, "p1": 0} for i in range(1, 9)}
 
@@ -23,16 +26,70 @@ if 'playoff_blue_swap' not in st.session_state: st.session_state.playoff_blue_sw
 if 'playoff_red_out' not in st.session_state: st.session_state.playoff_red_out = None
 if 'playoff_blue_out' not in st.session_state: st.session_state.playoff_blue_out = None
 
-# --- CUSTOM CSS ---
+# --- TABLET & BOTTOM NAV CUSTOM CSS ---
 st.markdown("""
     <style>
-    .main .block-container { max-width: 100%; padding: 0.5rem 1rem; }
-    .team-info-box-detailed { padding: 8px; border-radius: 8px; border-top: 4px solid; background-color: rgba(255, 255, 255, 0.08); font-size: 12px; box-shadow: 1px 1px 4px rgba(0,0,0,0.3); margin-bottom: 5px; }
-    .stat-row { display: flex; justify-content: space-between; margin-bottom: 1px; }
-    .note-text { font-style: italic; font-size: 10px; color: #BDC3C7; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3px; padding-top: 2px; height: 32px; overflow: hidden; }
-    .staging-area { background: rgba(79, 139, 249, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #4F8BF9; margin-bottom: 20px; text-align: center; }
+    /* Hide standard Streamlit sidebar and extra margins */
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    .main .block-container { 
+        max-width: 100%; 
+        padding: 0.5rem 0.8rem 6rem 0.8rem; /* Padding bottom leaves room for fixed bottom bar */
+    }
+    
+    /* Responsive Cards */
+    .team-info-box-detailed { 
+        padding: 8px; 
+        border-radius: 8px; 
+        border-top: 4px solid; 
+        background-color: rgba(255, 255, 255, 0.08); 
+        font-size: 13px; 
+        box-shadow: 1px 1px 4px rgba(0,0,0,0.3); 
+        margin-bottom: 8px; 
+    }
+    .stat-row { display: flex; justify-content: space-between; margin-bottom: 2px; }
+    .note-text { 
+        font-style: italic; 
+        font-size: 11px; 
+        color: #BDC3C7; 
+        border-top: 1px solid rgba(255,255,255,0.1); 
+        margin-top: 4px; 
+        padding-top: 2px; 
+        height: 36px; 
+        overflow: hidden; 
+    }
+    .staging-area { 
+        background: rgba(79, 139, 249, 0.2); 
+        padding: 12px; 
+        border-radius: 10px; 
+        border: 2px solid #4F8BF9; 
+        margin-bottom: 15px; 
+        text-align: center; 
+    }
+
+    /* Fixed Bottom Navigation Dock */
+    .bottom-nav-container {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background-color: #0E1117;
+        border-top: 1px solid rgba(255, 255, 255, 0.15);
+        padding: 8px 16px;
+        z-index: 99999;
+        box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
+    }
+    
+    /* Clean up HTML component padding */
     [data-testid="stHtml"] { padding: 0 !important; margin: 0 !important; }
     iframe { display: block; margin: 0 auto; border: none; overflow: hidden; }
+
+    /* Tablet Optimizations (Screen width up to 1024px) */
+    @media (max-width: 1024px) {
+        .team-info-box-detailed { font-size: 11px; }
+        .note-text { font-size: 10px; height: 30px; }
+        .stButton button { font-size: 12px !important; padding: 4px 8px !important; }
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -69,11 +126,6 @@ def load_ftc_data():
         return data, schema, ali
     except Exception: 
         return None, None, None
-
-# --- SIDEBAR CONTROL ---
-with st.sidebar:
-    st.title("⚙️ FTC HUB CONTROL")
-    view = st.radio("Navigation", ["🗺️ Field Map", "📊 Overview", "🤖 per team", "🤝 Alliance Selection", "🏆 Playoffs"], label_visibility="collapsed")
 
 df, schema_df, alliance_df = load_ftc_data()
 
@@ -112,7 +164,7 @@ def detailed_card(team_num, color_hex):
 
 def render_field_interactive(red_teams, blue_teams):
     img_file = "ftcfield.png"
-    max_w = "550px"
+    max_w = "500px"
     
     img_b64 = ""
     if os.path.exists(img_file):
@@ -123,10 +175,10 @@ def render_field_interactive(red_teams, blue_teams):
     blue_bots = "".join([f'<div class="bot blue" style="right: 15%; top: {25+(i*35)}%;" id="b{i}">{blue_teams[i]}</div>' for i in range(len(blue_teams))])
 
     html_content = f"""
-    <div id="controls" style="display:flex; gap:10px; margin:0 auto; max-width:{max_w}; padding:0 0 5px 0;">
-        <button onclick="setMode('move')" style="flex:1; padding:8px; cursor:pointer; background:#4F8BF9; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Move</button>
-        <button onclick="setMode('draw')" style="flex:1; padding:8px; cursor:pointer; background:#2ECC71; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Draw</button>
-        <button onclick="clearCanvas()" style="flex:0.5; padding:8px; cursor:pointer; background:#E74C3C; color:white; border:none; border-radius:5px; font-weight:bold; font-size:12px;">Clear</button>
+    <div id="controls" style="display:flex; gap:8px; margin:0 auto; max-width:{max_w}; padding:0 0 5px 0;">
+        <button onclick="setMode('move')" style="flex:1; padding:6px; cursor:pointer; background:#4F8BF9; color:white; border:none; border-radius:5px; font-weight:bold; font-size:11px;">Move</button>
+        <button onclick="setMode('draw')" style="flex:1; padding:6px; cursor:pointer; background:#2ECC71; color:white; border:none; border-radius:5px; font-weight:bold; font-size:11px;">Draw</button>
+        <button onclick="clearCanvas()" style="flex:0.5; padding:6px; cursor:pointer; background:#E74C3C; color:white; border:none; border-radius:5px; font-weight:bold; font-size:11px;">Clear</button>
     </div>
     <div id="field-viewport" style="width:100%; max-width:{max_w}; margin:0 auto; overflow:hidden; border: 2px solid #555; border-radius: 8px; background:#000; line-height:0;">
         <div id="field-container" style="position: relative; width: 100%; padding-bottom: 100%; height: 0; touch-action: none; margin:0;">
@@ -136,7 +188,7 @@ def render_field_interactive(red_teams, blue_teams):
         </div>
     </div>
     <style>
-        .bot {{ position: absolute; width: 38px; height: 38px; border-radius: 50%; color: white; font-family: sans-serif; font-weight: bold; font-size: 10px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 4px 8px black; cursor: grab; z-index: 20; touch-action: none; transform: translate(-50%, -50%); }}
+        .bot {{ position: absolute; width: 34px; height: 34px; border-radius: 50%; color: white; font-family: sans-serif; font-weight: bold; font-size: 10px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 3px 6px black; cursor: grab; z-index: 20; touch-action: none; transform: translate(-50%, -50%); }}
         .bot:active {{ cursor: grabbing; }} .red {{ background: #FF4B4B; }} .blue {{ background: #1F77B4; }}
     </style>
     <script>
@@ -175,37 +227,37 @@ def render_field_interactive(red_teams, blue_teams):
         }});
     </script>
     """
-    st.components.v1.html(html_content, height=590)
+    st.components.v1.html(html_content, height=540)
 
-# --- VIEW CONTROLS ---
-with st.sidebar:
-    st.divider()
-    if view in ["🗺️ Field Map", "📊 Overview"]:
-        m_list = sorted(schema_df['match_number'].unique().astype(int))
-        st.session_state.m_sel_val = st.selectbox("Select Match", m_list, index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0)
-    if st.button("🔄 Sync Data", use_container_width=True): 
-        st.cache_data.clear()
-        st.rerun()
+# --- TOP MATCH SELECTOR (IF IN MATCH VIEWS) ---
+if st.session_state.nav_view in ["🗺️ Field Map", "📊 Overview"]:
+    m_list = sorted(schema_df['match_number'].unique().astype(int))
+    st.session_state.m_sel_val = st.selectbox(
+        "Select Match Number", 
+        m_list, 
+        index=m_list.index(st.session_state.m_sel_val) if st.session_state.m_sel_val in m_list else 0
+    )
 
-# --- 1. FIELD MAP VIEW ---
+# --- MAIN CONTENT VIEW ROUTING ---
+view = st.session_state.nav_view
+
 if view == "🗺️ Field Map":
     m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
     r_keys = [c for c in ['red1','red2'] if c in m_row.index and pd.notna(m_row[c])]
     b_keys = [c for c in ['blue1','blue2'] if c in m_row.index and pd.notna(m_row[c])]
     rt, bt = [int(m_row[c]) for c in r_keys], [int(m_row[c]) for c in b_keys]
     
-    c1, c2, c3 = st.columns([1.2, 3.5, 1.2])
+    c1, c2, c3 = st.columns([1.2, 3.2, 1.2])
     with c1:
-        st.markdown("<div style='text-align:center; color:#FF4B4B; font-weight:bold; margin-bottom:5px;'>RED</div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align:center; color:#FF4B4B; font-weight:bold; margin-bottom:5px;'>RED ALLIANCE</div>", unsafe_allow_html=True)
         for t in rt: detailed_card(t, "#FF4B4B")
     with c2:
         render_field_interactive(rt, bt)
         st.markdown(f"<div style='text-align:center; font-weight:bold; color:#BDC3C7; margin-top:-10px;'>MATCH {st.session_state.m_sel_val}</div>", unsafe_allow_html=True)
     with c3:
-        st.markdown("<div style='text-align:center; color:#1F77B4; font-weight:bold; margin-bottom:5px;'>BLUE</div>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align:center; color:#1F77B4; font-weight:bold; margin-bottom:5px;'>BLUE ALLIANCE</div>", unsafe_allow_html=True)
         for t in bt: detailed_card(t, "#1F77B4")
 
-# --- 2. PER TEAM VIEW ---
 elif view == "🤖 per team":
     t_list = sorted(set(df['Team Number'].unique()))
     sel_t = st.selectbox("🔍 Select Team", t_list)
@@ -223,13 +275,12 @@ elif view == "🤖 per team":
     with l:
         merged = df[df['Team Number'] == sel_t].copy()
         merged['X'] = merged['Match Number'].apply(lambda x: f"M{int(x)}")
-        st.plotly_chart(px.line(merged.sort_values('Match Number'), x="X", y="Total Score", markers=True, template="plotly_dark", height=300), use_container_width=True)
+        st.plotly_chart(px.line(merged.sort_values('Match Number'), x="X", y="Total Score", markers=True, template="plotly_dark", height=280), use_container_width=True)
         st.table(df[df['Team Number'] == sel_t].dropna(subset=['Comments'])[['Match Number', 'Comments']].sort_values('Match Number', ascending=False))
     with r:
         if stats['died'] > 0: 
             st.error(f"⚠️ Team Died/Tipped in {stats['died']} matches!")
 
-# --- 3. ALLIANCE SELECTION VIEW ---
 elif view == "🤝 Alliance Selection":
     st.title("🤝 FTC Draft Board")
     if st.session_state.active_team_selection:
@@ -266,7 +317,6 @@ elif view == "🤝 Alliance Selection":
                                 st.session_state.alliances_state[i][key] = 0
                                 st.rerun()
 
-# --- 4. OVERVIEW VIEW ---
 elif view == "📊 Overview":
     m_row = schema_df[schema_df['match_number'] == st.session_state.m_sel_val].iloc[0]
     r_keys = [c for c in ['red1','red2'] if c in m_row.index and pd.notna(m_row[c])]
@@ -282,7 +332,6 @@ elif view == "📊 Overview":
         st.subheader("🔵 Blue Alliance")
         for t in bt: detailed_card(t, "#1F77B4")
 
-# --- 5. PLAYOFFS VIEW ---
 elif view == "🏆 Playoffs":
     st.title("🏆 FTC Playoffs")
     a_names = [f"Alliance {i+1}" for i in range(len(alliance_df))]
@@ -311,10 +360,36 @@ elif view == "🏆 Playoffs":
                 st.session_state.playoff_blue_out = out_b
                 b_roster = [int(b_row['2e']) if x == out_b else x for x in b_roster]
 
-    c1, c2, c3 = st.columns([1.2, 3.5, 1.2])
+    c1, c2, c3 = st.columns([1.2, 3.2, 1.2])
     with c1:
         for t in r_roster: detailed_card(t, "#FF4B4B")
     with c2: 
         render_field_interactive(r_roster, b_roster)
     with c3:
         for t in b_roster: detailed_card(t, "#1F77B4")
+
+# --- FIXED BOTTOM NAVIGATION BAR DOCK ---
+st.markdown('<div class="bottom-nav-container">', unsafe_allow_html=True)
+b_col1, b_col2, b_col3, b_col4, b_col5, b_col6 = st.columns([1, 1, 1, 1, 1, 0.8])
+
+nav_items = [
+    ("🗺️ Map", "🗺️ Field Map"),
+    ("📊 Overview", "📊 Overview"),
+    ("🤖 Team", "🤖 per team"),
+    ("🤝 Alliances", "🤝 Alliance Selection"),
+    ("🏆 Playoffs", "🏆 Playoffs")
+]
+
+for col, (label, target_view) in zip([b_col1, b_col2, b_col3, b_col4, b_col5], nav_items):
+    with col:
+        is_active = st.session_state.nav_view == target_view
+        if st.button(label, key=f"nav_btn_{target_view}", use_container_width=True, type="primary" if is_active else "secondary"):
+            st.session_state.nav_view = target_view
+            st.rerun()
+
+with b_col6:
+    if st.button("🔄 Sync", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+st.markdown('</div>', unsafe_allow_html=True)
