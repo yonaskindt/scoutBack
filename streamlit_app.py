@@ -15,10 +15,10 @@ SCOPES = [
 SHEET_ID = st.secrets.get("sheet_id", "1mXWkiXWxSOLymfjCzeUhZpjR10aQaxKpMgUnwIadNlY")
 
 
-# --- Google Sheets Loader (Slices Row 2+ & Col B+) ---
+# --- Google Sheets Loader (Reads Row 2+ and Column B+) ---
 @st.cache_data(ttl=30)
 def get_google_data(sheet_id: str, tab_name: str) -> pd.DataFrame:
-    """Fetch sheet tab starting from Row 2 and Column B onward."""
+    """Fetch sheet tab starting from Row 2 (headers) and Column B onward."""
     if "gcp_service_account" not in st.secrets:
         st.error("Missing `gcp_service_account` in Streamlit secrets.")
         return pd.DataFrame()
@@ -75,68 +75,55 @@ def load_all_ftc_data():
     if data.empty:
         data = get_google_data(SHEET_ID, "Per_Team")
 
-    if data.empty:
-        return None, None, None
-
     schema = get_google_data(SHEET_ID, "Matches")
     ali = get_google_data(SHEET_ID, "Alliances")
 
-    # Detect Team & Match columns
-    t_col = next((c for c in ['team_number', 'team number', 'team', 'team_num'] if c in data.columns), None)
-    m_col = next((c for c in ['match_number', 'match number', 'match', 'match_num'] if c in data.columns), None)
-    a_col = next((c for c in ['alliance', 'color'] if c in data.columns), None)
+    # Standardize headers across all DataFrames
+    for df in [data, schema, ali]:
+        if df is not None and not df.empty:
+            df.columns = df.columns.str.strip().str.lower()
 
-    # Standardize column name references
-    if t_col:
-        data.rename(columns={t_col: 'team_number'}, inplace=True)
-    if m_col:
-        data.rename(columns={m_col: 'match_number'}, inplace=True)
-    if a_col:
-        data.rename(columns={a_col: 'alliance'}, inplace=True)
+    # 1. Process Main Scouting Data
+    if data is not None and not data.empty:
+        # Detect Team & Match columns
+        t_col = next((c for c in ['team_number', 'team number', 'team', 'team_num'] if c in data.columns), None)
+        m_col = next((c for c in ['match_number', 'match number', 'match', 'match_num'] if c in data.columns), None)
+        a_col = next((c for c in ['alliance', 'color'] if c in data.columns), None)
 
-    # Ensure numeric team numbers
-    if 'team_number' in data.columns:
-        data['team_number'] = pd.to_numeric(data['team_number'], errors='coerce').fillna(0).astype(int)
+        if t_col:
+            data.rename(columns={t_col: 'team_number'}, inplace=True)
+            data['team_number'] = pd.to_numeric(data['team_number'], errors='coerce').fillna(0).astype(int)
+        if m_col:
+            data.rename(columns={m_col: 'match_number'}, inplace=True)
+            data['match_number'] = pd.to_numeric(data['match_number'], errors='coerce').fillna(0).astype(int)
+        if a_col:
+            data.rename(columns={a_col: 'alliance'}, inplace=True)
 
-    # Dynamic Matches generator if missing tab
-    if schema.empty and 'match_number' in data.columns and 'team_number' in data.columns:
-        match_rows = []
-        for m_num, group in data.groupby('match_number'):
-            if 'alliance' in group.columns:
-                reds = group[group['alliance'].str.lower() == 'red']['team_number'].tolist()
-                blues = group[group['alliance'].str.lower() == 'blue']['team_number'].tolist()
-            else:
-                teams = group['team_number'].tolist()
-                reds, blues = teams[:2], teams[2:]
+        # Convert numeric scoring columns safely
+        for col in ['+1', '+3', '+5', 'amount in hub', 'auto points', 'teleop points']:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
 
-            match_rows.append({
-                'match_number': int(m_num),
-                'red1': reds[0] if len(reds) > 0 else 0,
-                'red2': reds[1] if len(reds) > 1 else 0,
-                'blue1': blues[0] if len(blues) > 0 else 0,
-                'blue2': blues[1] if len(blues) > 1 else 0,
-            })
-        schema = pd.DataFrame(match_rows)
+        score_cols = [c for c in ['+1', '+3', '+5'] if c in data.columns]
+        if score_cols:
+            data['total score'] = data[score_cols].sum(axis=1)
+        elif 'total score' not in data.columns:
+            data['total score'] = 0
 
-    # Convert numeric scoring columns safely
-    for col in ['+1', '+3', '+5', 'amount in hub', 'auto points', 'teleop points']:
-        if col in data.columns:
-            data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
+        # Clean Boolean Flags
+        def clean_bool(val):
+            return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
 
-    score_cols = [c for c in ['+1', '+3', '+5'] if c in data.columns]
-    if score_cols:
-        data['total score'] = data[score_cols].sum(axis=1)
-    elif 'total score' not in data.columns:
-        data['total score'] = 0
+        for col in ['moved?', 'died?', 'tipped/fell over?', 'defence/ to other side']:
+            if col in data.columns:
+                clean_key = col.replace('?', '').split('/')[0].strip() + '_num'
+                data[clean_key] = data[col].apply(clean_bool)
 
-    # Clean Boolean Flags
-    def clean_bool(val):
-        return 1 if str(val).lower() in ['true', '1', '1.0', 'yes', 'y'] else 0
-
-    for col in ['moved?', 'died?', 'tipped/fell over?', 'defence/ to other side']:
-        if col in data.columns:
-            clean_key = col.replace('?', '').split('/')[0].strip() + '_num'
-            data[clean_key] = data[col].apply(clean_bool)
+    # 2. Process Matches Schema (Matches Tab: B2='match_number', C2='r1', D2='r2', E2='b1', F2='b2')
+    if schema is not None and not schema.empty:
+        m_schema_col = next((c for c in ['match_number', 'match number', 'match'] if c in schema.columns), schema.columns[0])
+        schema.rename(columns={m_schema_col: 'match_number'}, inplace=True)
+        schema['match_number'] = pd.to_numeric(schema['match_number'], errors='coerce').fillna(0).astype(int)
 
     return data, schema, ali
 
@@ -159,32 +146,45 @@ tabs = st.tabs(["⚔️ Match Strategy & Field View", "📊 Per-Team Analytics",
 with tabs[0]:
     st.title("Match Strategy & Field Overview")
 
-    available_matches = sorted(data_df['match_number'].unique()) if 'match_number' in data_df.columns else [1]
-    
+    # Fetch available match numbers safely from schema or data
+    if schema_df is not None and not schema_df.empty and 'match_number' in schema_df.columns:
+        available_matches = sorted([m for m in schema_df['match_number'].unique() if m > 0])
+    elif data_df is not None and not data_df.empty and 'match_number' in data_df.columns:
+        available_matches = sorted([m for m in data_df['match_number'].unique() if m > 0])
+    else:
+        available_matches = [1]
+
+    if not available_matches:
+        available_matches = [1]
+
     col_m, _ = st.columns([1, 2])
     with col_m:
         selected_match = st.selectbox("Select Match:", options=available_matches, key="m_sel")
 
-    # Safe Match Schema Lookup
+    # Match Schema Lookup
     m_row = None
-    if schema_df is not None and not schema_df.empty:
-        m_schema_col = next((c for c in ['match_number', 'match number', 'match'] if c in schema_df.columns), schema_df.columns[0])
-        matched = schema_df[schema_df[m_schema_col].astype(str).str.strip() == str(selected_match)]
+    if schema_df is not None and not schema_df.empty and 'match_number' in schema_df.columns:
+        matched = schema_df[schema_df['match_number'] == int(selected_match)]
         if not matched.empty:
             m_row = matched.iloc[0]
 
+    # Team extraction helper for r1, r2, b1, b2 headers
     def safe_get_team(row, keys):
-        if row is None: return 0
+        if row is None:
+            return 0
         for k in keys:
             if k in row.index:
-                try: return int(float(row[k]))
-                except: pass
+                try:
+                    val = str(row[k]).strip()
+                    return int(float(val)) if val and val != "None" else 0
+                except (ValueError, TypeError):
+                    pass
         return 0
 
-    r1 = safe_get_team(m_row, ['red1', 'red 1'])
-    r2 = safe_get_team(m_row, ['red2', 'red 2'])
-    b1 = safe_get_team(m_row, ['blue1', 'blue 1'])
-    b2 = safe_get_team(m_row, ['blue2', 'blue 2'])
+    r1 = safe_get_team(m_row, ['r1', 'red1', 'red 1'])
+    r2 = safe_get_team(m_row, ['r2', 'red2', 'red 2'])
+    b1 = safe_get_team(m_row, ['b1', 'blue1', 'blue 1'])
+    b2 = safe_get_team(m_row, ['b2', 'blue2', 'blue 2'])
 
     # --- FIELD LAYOUT VISUALIZER ---
     st.subheader(f"Field Layout - Match {selected_match}")
@@ -195,7 +195,7 @@ with tabs[0]:
             f"""
             <div style="background-color: #ff4b4b22; border: 2px solid #ff4b4b; padding: 15px; border-radius: 10px; text-align: center;">
                 <h3 style="color: #ff4b4b; margin:0;">🔴 RED ALLIANCE</h3>
-                <h2 style="margin:10px 0;">Team {r1} &nbsp;|&nbsp; Team {r2}</h2>
+                <h2 style="margin:10px 0;">Team {r1 if r1 else 'N/A'} &nbsp;|&nbsp; Team {r2 if r2 else 'N/A'}</h2>
             </div>
             """, unsafe_allow_html=True
         )
@@ -205,7 +205,7 @@ with tabs[0]:
             f"""
             <div style="background-color: #1c83e122; border: 2px solid #1c83e1; padding: 15px; border-radius: 10px; text-align: center;">
                 <h3 style="color: #1c83e1; margin:0;">🔵 BLUE ALLIANCE</h3>
-                <h2 style="margin:10px 0;">Team {b1} &nbsp;|&nbsp; Team {b2}</h2>
+                <h2 style="margin:10px 0;">Team {b1 if b1 else 'N/A'} &nbsp;|&nbsp; Team {b2 if b2 else 'N/A'}</h2>
             </div>
             """, unsafe_allow_html=True
         )
@@ -214,30 +214,29 @@ with tabs[0]:
 
     # --- SCOUTING METRICS FOR MATCH TEAMS ---
     st.subheader("Match Teams Performance Comparison")
-    match_teams = [t for t in [r1, r2, b1, b2] if t != 0]
+    match_teams = [t for t in [r1, r2, b1, b2] if t > 0]
 
-    if match_teams:
+    if match_teams and 'team_number' in data_df.columns:
         match_data = data_df[data_df['team_number'].isin(match_teams)]
 
         if not match_data.empty:
-            # Summary Metrics Table
             agg_dict = {'total score': 'mean'}
             for c in ['moved_num', 'died_num', 'tipped_num']:
                 if c in match_data.columns:
                     agg_dict[c] = 'mean'
 
             metrics_df = match_data.groupby('team_number').agg(agg_dict).reset_index()
-            metrics_df.rename(columns={
-                'team_number': 'Team',
-                'total score': 'Avg Points',
-                'moved_num': 'Auto Move Rate',
-                'died_num': 'Died Rate',
-                'tipped_num': 'Tip Rate'
-            }, inplace=True)
+            
+            rename_map = {'team_number': 'Team', 'total score': 'Avg Points'}
+            if 'moved_num' in metrics_df.columns: rename_map['moved_num'] = 'Auto Move Rate'
+            if 'died_num' in metrics_df.columns: rename_map['died_num'] = 'Died Rate'
+            if 'tipped_num' in metrics_df.columns: rename_map['tipped_num'] = 'Tip Rate'
+
+            metrics_df.rename(columns=rename_map, inplace=True)
 
             st.dataframe(metrics_df.style.highlight_max(axis=0, subset=['Avg Points'], color='#2e7bcf'), use_container_width=True)
 
-            # Scoring breakdown chart
+            # Box plot chart for match teams
             fig_match = px.box(
                 match_data,
                 x='team_number',
@@ -248,7 +247,7 @@ with tabs[0]:
             )
             st.plotly_chart(fig_match, use_container_width=True)
         else:
-            st.info("No detailed scouting entries found for these 4 teams yet.")
+            st.info("No detailed scouting entries found for these 4 teams in the Data tab yet.")
     else:
         st.info("No alliance team mapping available for this match.")
 
@@ -259,32 +258,34 @@ with tabs[0]:
 with tabs[1]:
     st.title("Per-Team Performance Analysis")
 
-    all_teams = sorted(data_df['team_number'].unique())
-    selected_team = st.selectbox("Select Team:", options=all_teams, key="t_sel")
+    if 'team_number' in data_df.columns:
+        all_teams = sorted([t for t in data_df['team_number'].unique() if t > 0])
+        if all_teams:
+            selected_team = st.selectbox("Select Team:", options=all_teams, key="t_sel")
+            t_data = data_df[data_df['team_number'] == selected_team]
 
-    t_data = data_df[data_df['team_number'] == selected_team]
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+            with kpi1:
+                st.metric("Matches Scouted", len(t_data))
+            with kpi2:
+                st.metric("Avg Score", f"{t_data['total score'].mean():.1f}" if not t_data.empty else "0")
+            with kpi3:
+                st.metric("Max Score", int(t_data['total score'].max()) if not t_data.empty else 0)
+            with kpi4:
+                reliability = (1 - t_data['died_num'].mean()) * 100 if 'died_num' in t_data.columns and not t_data.empty else 100
+                st.metric("Reliability", f"{reliability:.0f}%")
 
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    with kpi1:
-        st.metric("Matches Scouted", len(t_data))
-    with kpi2:
-        st.metric("Avg Score", f"{t_data['total score'].mean():.1f}")
-    with kpi3:
-        st.metric("Max Score", int(t_data['total score'].max()) if not t_data.empty else 0)
-    with kpi4:
-        reliability = (1 - t_data['died_num'].mean()) * 100 if 'died_num' in t_data.columns else 100
-        st.metric("Reliability", f"{reliability:.0f}%")
-
-    # Historical trend
-    if 'match_number' in t_data.columns:
-        fig_trend = px.line(
-            t_data.sort_values('match_number'),
-            x='match_number',
-            y='total score',
-            markers=True,
-            title=f"Team {selected_team} Score Progression Across Matches"
-        )
-        st.plotly_chart(fig_trend, use_container_width=True)
+            if 'match_number' in t_data.columns and not t_data.empty:
+                fig_trend = px.line(
+                    t_data.sort_values('match_number'),
+                    x='match_number',
+                    y='total score',
+                    markers=True,
+                    title=f"Team {selected_team} Score Progression Across Matches"
+                )
+                st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.info("No team numbers found in scouting data.")
 
 
 # ==============================================================================
@@ -293,13 +294,14 @@ with tabs[1]:
 with tabs[2]:
     st.title("Alliance Selection Leaderboard")
 
-    leaderboard = data_df.groupby('team_number').agg(
-        Matches_Played=('total score', 'count'),
-        Avg_Score=('total score', 'mean'),
-        Max_Score=('total score', 'max')
-    ).reset_index().sort_values(by='Avg_Score', ascending=False)
+    if 'team_number' in data_df.columns and not data_df.empty:
+        leaderboard = data_df.groupby('team_number').agg(
+            Matches_Played=('total score', 'count'),
+            Avg_Score=('total score', 'mean'),
+            Max_Score=('total score', 'max')
+        ).reset_index().sort_values(by='Avg_Score', ascending=False)
 
-    st.dataframe(leaderboard, use_container_width=True)
+        st.dataframe(leaderboard, use_container_width=True)
 
 
 # ==============================================================================
