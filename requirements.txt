@@ -3,3 +3,5 @@ pandas
 openpyxl
 plotly
 statbotics
+google-auth
+streamlit-autorefresh
